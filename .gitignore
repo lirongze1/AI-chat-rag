@@ -1,0 +1,45 @@
+# Node.js
+node_modules/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Dependency directories
+jspm_packages/
+
+# Build output
+dist/
+build/
+
+# TypeScript
+*.tsbuildinfo
+
+# IDE files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Python
+.venv/
+venv/
+**/.venv/
+**/venv/
+ai_chroma/
+__pycache__/
+*.pyc
+
+# Local environment files
+.env
+
+# Local runtime data
+upload/
+*.db
+*.db-journal
