@@ -82,8 +82,7 @@ async def process_knowledge_ingestion_job(job: IngestionJob) -> None:
             )
         )
 
-        knowledge_vector_store.delete_file_chunks(job.fileId)
-
+        # 不再先删后写：新版本向量写入成功后再清理旧版本，失败时旧向量保持可用。
         chunk_documents: list[Document] = []
         ids: list[str] = []
         chunk_payloads = []
@@ -100,7 +99,7 @@ async def process_knowledge_ingestion_job(job: IngestionJob) -> None:
             preview = _build_preview(text)
 
             ids.append(vector_id)
-            # 这些 metadata 会随向量一同写入 Chroma，供后续按文件维度清理和追踪。
+            # 这些 metadata 随向量写入 Chroma，供按文件、用户和版本维度清理与追踪。
             chunk_documents.append(
                 Document(
                     id=vector_id,
@@ -113,6 +112,7 @@ async def process_knowledge_ingestion_job(job: IngestionJob) -> None:
                         "page_number": page_number,
                         "file_name": job.fileName,
                         "content_md5": job.contentMd5,
+                        "ingest_version": job.parseVersion,
                     },
                 )
             )
@@ -136,6 +136,14 @@ async def process_knowledge_ingestion_job(job: IngestionJob) -> None:
         )
 
         knowledge_vector_store.add_chunks(documents=chunk_documents, ids=ids)
+
+        # 全部新向量写入成功后，才删除同文件同用户下版本更旧的向量；
+        # 任一前置步骤失败都会走 except 分支，旧向量保持不动。
+        knowledge_vector_store.delete_older_ingest_versions(
+            job.fileId,
+            job.userId,
+            job.parseVersion,
+        )
 
         # 向量落库成功后，再同步 Node 侧需要展示和检索的分块元信息。
         await callback_client.sync_chunks(

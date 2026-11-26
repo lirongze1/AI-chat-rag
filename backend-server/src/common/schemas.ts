@@ -6,68 +6,31 @@ function resolveRequiredUserId(data: { userId?: string; browserFingerprintHash?:
 
 const md5HexSchema = z.string().regex(/^[a-fA-F0-9]{32}$/);
 
-// Shared primitives reused across multiple query/body schemas.
-export const fingerprintSchema = z
-  .object({
-    userId: z.string().min(1).optional(),
-    browserFingerprintHash: z.string().min(1).optional(),
-  })
-  .superRefine((data, ctx) => {
-    if (!resolveRequiredUserId(data)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["userId"], message: "Required" });
-    }
-  })
-  .transform((data) => ({ userId: resolveRequiredUserId(data)! }));
+/* ------------------------------ Account auth ------------------------------ */
 
-export const uploadBodySchema = z
-  .object({
-    userId: z.string().min(1).optional(),
-    browserFingerprintHash: z.string().min(1).optional(),
-  })
-  .superRefine((data, ctx) => {
-    if (!resolveRequiredUserId(data)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["userId"], message: "Required" });
-    }
-  })
-  .transform((data) => ({ userId: resolveRequiredUserId(data)! }));
+export const registerBodySchema = z.object({
+  email: z.string().trim().email().max(254),
+  password: z.string().min(8).max(128),
+  displayName: z.string().trim().min(1).max(100).optional(),
+});
 
-export const filePrecheckBodySchema = z
-  .object({
-    userId: z.string().min(1).optional(),
-    browserFingerprintHash: z.string().min(1).optional(),
-    contentMd5: md5HexSchema,
-  })
-  .superRefine((data, ctx) => {
-    if (!resolveRequiredUserId(data)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["userId"], message: "Required" });
-    }
-  })
-  .transform((data) => ({
-    userId: resolveRequiredUserId(data)!,
-    contentMd5: data.contentMd5.toLowerCase(),
-  }));
+export const loginBodySchema = z.object({
+  email: z.string().trim().email().max(254),
+  password: z.string().min(1).max(128),
+});
 
-export const chunkUploadInitBodySchema = z
-  .object({
-    uploadId: md5HexSchema,
-    userId: z.string().min(1).optional(),
-    browserFingerprintHash: z.string().min(1).optional(),
-    fileName: z.string().min(1),
-    fileSizeBytes: z.coerce.number().int().positive(),
-    totalChunks: z.coerce.number().int().min(1),
-  })
-  .superRefine((data, ctx) => {
-    if (!resolveRequiredUserId(data)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["userId"], message: "Required" });
-    }
-  })
-  .transform((data) => ({
-    uploadId: data.uploadId,
-    userId: resolveRequiredUserId(data)!,
-    fileName: data.fileName,
-    fileSizeBytes: data.fileSizeBytes,
-    totalChunks: data.totalChunks,
-  }));
+/* ------------------------------- File upload ------------------------------ */
+
+export const filePrecheckBodySchema = z.object({
+  contentMd5: md5HexSchema,
+});
+
+export const chunkUploadInitBodySchema = z.object({
+  uploadId: md5HexSchema,
+  fileName: z.string().min(1),
+  fileSizeBytes: z.coerce.number().int().positive(),
+  totalChunks: z.coerce.number().int().min(1),
+});
 
 export const chunkUploadBodySchema = z.object({
   uploadId: md5HexSchema,
@@ -86,23 +49,10 @@ export const chunkUploadCompleteBodySchema = z.object({
 const parseStatusEnum = z.enum(["pending", "processing", "failed", "indexed"]);
 
 export const filesQuerySchema = z.object({
-  userId: z.string().min(1).optional(),
-  browserFingerprintHash: z.string().min(1).optional(),
   parseStatus: parseStatusEnum.optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(50),
-})
-  .superRefine((data, ctx) => {
-    if (!resolveRequiredUserId(data)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["userId"], message: "Required" });
-    }
-  })
-  .transform((data) => ({
-    userId: resolveRequiredUserId(data)!,
-    parseStatus: data.parseStatus,
-    page: data.page,
-    limit: data.limit,
-  }));
+});
 
 export const taskParamsSchema = z.object({
   taskId: z.string().uuid(),
@@ -113,117 +63,52 @@ export const fileParamsSchema = z.object({
 });
 
 export const fileDetailQuerySchema = z.object({
-  userId: z.string().min(1).optional(),
-  browserFingerprintHash: z.string().min(1).optional(),
   page: z.coerce.number().int().min(1).default(1),
   limit: z.coerce.number().int().min(1).max(200).default(20),
-})
-  .superRefine((data, ctx) => {
-    if (!resolveRequiredUserId(data)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["userId"], message: "Required" });
-    }
-  })
-  .transform((data) => ({
-    userId: resolveRequiredUserId(data)!,
-    page: data.page,
-    limit: data.limit,
-  }));
+});
 
-export const createSessionBodySchema = z
-  .object({
-    userId: z.string().min(1).optional(),
-    browserFingerprintHash: z.string().min(1).optional(),
-    title: z.string().max(200).optional(),
-  })
-  .superRefine((data, ctx) => {
-    if (!resolveRequiredUserId(data)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["userId"], message: "Required" });
-    }
-  })
-  .transform((data) => ({
-    userId: resolveRequiredUserId(data)!,
-    title: data.title,
-  }));
+/* -------------------------------- Chat ----------------------------------- */
 
-export const sessionsQuerySchema = z
-  .object({
-    userId: z.string().min(1).optional(),
-    browserFingerprintHash: z.string().min(1).optional(),
-    limit: z.coerce.number().int().min(1).max(200).default(50),
-  })
-  .superRefine((data, ctx) => {
-    if (!resolveRequiredUserId(data)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["userId"], message: "Required" });
-    }
-  })
-  .transform((data) => ({
-    userId: resolveRequiredUserId(data)!,
-    limit: data.limit,
-  }));
+export const createSessionBodySchema = z.object({
+  title: z.string().max(200).optional(),
+});
+
+export const sessionsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+});
 
 export const sessionParamsSchema = z.object({
   id: z.string().uuid(),
 });
 
-export const deleteSessionsBodySchema = z
-  .object({
-    userId: z.string().min(1).optional(),
-    browserFingerprintHash: z.string().min(1).optional(),
-    sessionIds: z.array(z.string().uuid()).min(1),
-  })
-  .superRefine((data, ctx) => {
-    if (!resolveRequiredUserId(data)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["userId"], message: "Required" });
-    }
-  })
-  .transform((data) => ({
-    userId: resolveRequiredUserId(data)!,
-    sessionIds: data.sessionIds,
-  }));
+export const deleteSessionsBodySchema = z.object({
+  sessionIds: z.array(z.string().uuid()).min(1),
+});
 
 export const messageBodySchema = z.object({
   role: z.enum(["user", "assistant"]),
   content: z.string().min(1),
 });
 
-export const chatCompletionBodySchema = z
-  .object({
-    content: z.string().min(1),
-    userId: z.string().min(1).optional(),
-    browserFingerprintHash: z.string().min(1).optional(),
-  })
-  .superRefine((data, ctx) => {
-    if (!resolveRequiredUserId(data)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["userId"], message: "Required" });
-    }
-  })
-  .transform((data) => ({
-    content: data.content,
-    userId: resolveRequiredUserId(data)!,
-  }));
+export const chatCompletionBodySchema = z.object({
+  content: z.string().min(1),
+});
 
 export const messageListQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 
 // Input contract for forwarding user queries to Python AI service.
-export const aiChatBodySchema = z
-  .object({
-    query: z.string().min(1),
-    sessionId: z.string().uuid().optional(),
-    userId: z.string().min(1).optional(),
-    browserFingerprintHash: z.string().min(1).optional(),
-    recentMessages: z.array(z.object({
-      role: z.enum(["user", "assistant"]),
-      content: z.string().min(1),
-    })).optional(),
-  })
-  .transform((data) => ({
-    query: data.query,
-    sessionId: data.sessionId,
-    userId: data.userId ?? data.browserFingerprintHash,
-    recentMessages: data.recentMessages,
-  }));
+export const aiChatBodySchema = z.object({
+  query: z.string().min(1),
+  sessionId: z.string().uuid().optional(),
+  recentMessages: z.array(z.object({
+    role: z.enum(["user", "assistant"]),
+    content: z.string().min(1),
+  })).optional(),
+});
+
+/* --------------------- Service-to-service callbacks ---------------------- */
 
 const taskStatusEnum = z.enum(["queued", "running", "success", "failed", "cancelled"]);
 

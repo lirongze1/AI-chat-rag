@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useIngestionEvents } from "../components/knowledge-base/IngestionEventProvider";
+import { useKnowledgeSearch } from "../context/KnowledgeSearchContext";
 import {
   fetchKnowledgeBaseRows,
   requestIndexedFileOffload,
@@ -36,6 +37,16 @@ export function useKnowledgeBasePage() {
   const queuedDispatchRowIdsRef = useRef<string[]>([]);
   const navigate = useNavigate();
   const { latestEvent } = useIngestionEvents();
+  const { query } = useKnowledgeSearch();
+
+  // 顶栏搜索框过滤当前知识库文件列表（按文件名，忽略大小写）。
+  const visibleRows = useMemo(() => {
+    const keyword = query.trim().toLowerCase();
+    if (!keyword) {
+      return rows;
+    }
+    return rows.filter((row) => row.name.toLowerCase().includes(keyword));
+  }, [rows, query]);
 
   /**
    * 更新“已发起入库但后端状态尚未追平”的行 id 集合。
@@ -326,7 +337,7 @@ export function useKnowledgeBasePage() {
   }
 
   return {
-    rows,
+    rows: visibleRows,
     activeFilter,
     page,
     pageSize,

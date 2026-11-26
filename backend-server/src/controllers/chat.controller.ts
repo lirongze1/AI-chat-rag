@@ -3,7 +3,6 @@ import {
   chatCompletionBodySchema,
   createSessionBodySchema,
   deleteSessionsBodySchema,
-  fingerprintSchema,
   messageBodySchema,
   messageListQuerySchema,
   sessionParamsSchema,
@@ -54,18 +53,11 @@ function parseSseEventBlock(block: string) {
   };
 }
 
-/**
- * 为指纹用户创建新的会话。
- * @param req Express 请求对象。
- * @param res Express 响应对象。
- * @param next Express next 回调。
- * @returns 写入 201 成功响应或将错误传递给全局错误中间件。
- */
 export async function createSession(req: Request, res: Response, next: NextFunction) {
   try {
     const payload = validate(createSessionBodySchema, req.body || {}, "request body");
     const session = await chatService.createChatSession({
-      userId: payload.userId,
+      userId: req.userId,
       title: payload.title,
     });
     res.status(201).json({ data: session });
@@ -74,18 +66,11 @@ export async function createSession(req: Request, res: Response, next: NextFunct
   }
 }
 
-/**
- * 查询指纹用户下的会话列表。
- * @param req Express 请求对象。
- * @param res Express 响应对象。
- * @param next Express next 回调。
- * @returns 写入标准成功响应或将错误传递给全局错误中间件。
- */
 export async function getSessions(req: Request, res: Response, next: NextFunction) {
   try {
     const query = validate(sessionsQuerySchema, req.query || {}, "query params");
     const sessions = await chatService.getChatSessions({
-      userId: query.userId,
+      userId: req.userId,
       limit: query.limit,
     });
     res.json({ data: sessions });
@@ -94,23 +79,12 @@ export async function getSessions(req: Request, res: Response, next: NextFunctio
   }
 }
 
-/**
- * 删除单个会话及其关联消息。
- * @param req Express 请求对象。
- * @param res Express 响应对象。
- * @param next Express next 回调。
- */
 export async function deleteSession(req: Request, res: Response, next: NextFunction) {
   try {
     const { id } = validate(sessionParamsSchema, req.params || {}, "path params");
-    const payload = validate(
-      fingerprintSchema,
-      req.body && Object.keys(req.body).length ? req.body : req.query || {},
-      "request body",
-    );
     const result = await chatService.deleteChatSession({
       sessionId: id,
-      userId: payload.userId,
+      userId: req.userId,
     });
     res.json({ data: result });
   } catch (error) {
@@ -118,35 +92,26 @@ export async function deleteSession(req: Request, res: Response, next: NextFunct
   }
 }
 
-/**
- * 批量删除多个会话及其关联消息。
- * @param req Express 请求对象。
- * @param res Express 响应对象。
- * @param next Express next 回调。
- */
 export async function deleteSessions(req: Request, res: Response, next: NextFunction) {
   try {
     const body = validate(deleteSessionsBodySchema, req.body || {}, "request body");
-    const result = await chatService.deleteChatSessions(body);
+    const result = await chatService.deleteChatSessions({
+      userId: req.userId,
+      sessionIds: body.sessionIds,
+    });
     res.json({ data: result });
   } catch (error) {
     next(error);
   }
 }
 
-/**
- * 向指定会话追加一条消息。
- * @param req Express 请求对象。
- * @param res Express 响应对象。
- * @param next Express next 回调。
- * @returns 写入 201 成功响应或将错误传递给全局错误中间件。
- */
 export async function createMessage(req: Request, res: Response, next: NextFunction) {
   try {
     const { id } = validate(sessionParamsSchema, req.params || {}, "path params");
     const body = validate(messageBodySchema, req.body || {}, "request body");
     const message = await chatService.createChatMessage({
       sessionId: id,
+      userId: req.userId,
       role: body.role,
       content: body.content,
     });
@@ -157,30 +122,21 @@ export async function createMessage(req: Request, res: Response, next: NextFunct
   }
 }
 
-/**
- * 查询会话内按时间排序的消息。
- * @param req Express 请求对象。
- * @param res Express 响应对象。
- * @param next Express next 回调。
- * @returns 写入标准成功响应或将错误传递给全局错误中间件。
- */
 export async function getMessages(req: Request, res: Response, next: NextFunction) {
   try {
     const { id } = validate(sessionParamsSchema, req.params || {}, "path params");
     const { limit } = validate(messageListQuerySchema, req.query || {}, "query params");
-    const messages = await chatService.getChatMessages({ sessionId: id, limit });
+    const messages = await chatService.getChatMessages({
+      sessionId: id,
+      userId: req.userId,
+      limit,
+    });
     res.json({ data: messages });
   } catch (error) {
     next(error);
   }
 }
 
-/**
- * 为指定会话执行一次流式聊天完成。
- * @param req Express 请求对象。
- * @param res Express 响应对象。
- * @param next Express next 回调。
- */
 export async function completeSessionChat(req: Request, res: Response, next: NextFunction) {
   try {
     const { id } = validate(sessionParamsSchema, req.params || {}, "path params");
@@ -188,11 +144,12 @@ export async function completeSessionChat(req: Request, res: Response, next: Nex
 
     await chatService.requireOwnedSession({
       sessionId: id,
-      userId: body.userId,
+      userId: req.userId,
     });
 
     const userMessage = await chatService.createChatMessage({
       sessionId: id,
+      userId: req.userId,
       role: "user",
       content: body.content,
     });
@@ -216,7 +173,7 @@ export async function completeSessionChat(req: Request, res: Response, next: Nex
     const upstream = await aiService.streamChat({
       query: body.content,
       sessionId: id,
-      userId: body.userId,
+      userId: req.userId,
       recentMessages: recentMessages.map((message) => ({
         role: message.role,
         content: message.content,

@@ -6,8 +6,8 @@ import path from "node:path";
 import crypto from "node:crypto";
 import * as fileRepository from "../repositories/file.repository";
 import * as taskRepository from "../repositories/task.repository";
-import * as userRepository from "../repositories/user.repository";
 import * as aiService from "./ai.service";
+import * as ingestionScheduler from "./ingestionScheduler";
 import { publishIngestionEvent, subscribeToIngestionEvents } from "./ingestionEvents";
 
 const uploadDir = path.resolve(process.cwd(), "upload");
@@ -348,19 +348,8 @@ async function processUploadedTempFile(payload: { userId: string; tempFilePath: 
     throw error;
   }
 
-  // Fire-and-forget dispatch: upload call returns success immediately.
-  void aiService.dispatchIngestionTask({
-    taskId: result.task.id,
-    fileId: result.file.id,
-    userId: result.file.userId,
-    fileName: result.file.fileName,
-    fileExt: ext,
-    fileSizeBytes: result.file.fileSizeBytes,
-    contentMd5,
-    storagePath: result.file.storagePath,
-    absoluteFilePath: storageAbsolutePath,
-    parseVersion: result.file.parseVersion,
-  });
+  // DB-driven dispatch: the queued task is recoverable after a restart.
+  ingestionScheduler.requestDispatch(result.task.id);
 
   publishTaskAndFileUpdate(result.file.userId, {
     file: result.file,
@@ -387,16 +376,6 @@ async function computeFileMd5(filePath: string) {
     stream.on("error", reject);
     stream.on("end", () => resolve(md5.digest("hex")));
   });
-}
-
-/**
- * 基于用户 ID 幂等地解析用户身份。
- * @param userId 用户 ID。
- * @returns 最小用户标识对象，仅返回 id。
- */
-export async function identifyUser(userId: string) {
-  const user = await userRepository.upsertUserById(userId);
-  return { id: user.id };
 }
 
 /**
@@ -491,12 +470,20 @@ export async function initChunkUpload(payload: { uploadId: string; userId: strin
  * @param payload 分片上传参数。
  * @returns 当前上传进度信息。
  */
-export async function uploadChunk(payload: { uploadId: string; chunkIndex: number; file: Express.Multer.File }) {
+export async function uploadChunk(payload: {
+  uploadId: string;
+  userId: string;
+  chunkIndex: number;
+  file: Express.Multer.File;
+}) {
   if (!payload.file.path) {
     throw createApiError(500, "UPLOAD_STORAGE_ERROR", "Upload file path not available");
   }
 
   const manifest = await readChunkManifest(payload.uploadId);
+  if (manifest.userId !== payload.userId) {
+    throw createApiError(403, "UPLOAD_ACCESS_DENIED", "Upload session does not belong to current user");
+  }
   if (payload.chunkIndex >= manifest.totalChunks) {
     throw createApiError(400, "VALIDATION_ERROR", "Invalid request body", [{ path: "chunkIndex", message: "Out of range" }]);
   }
@@ -519,8 +506,11 @@ export async function uploadChunk(payload: { uploadId: string; chunkIndex: numbe
  * @param uploadId 上传会话 ID。
  * @returns 上传进度信息。
  */
-export async function getChunkUploadStatus(uploadId: string) {
+export async function getChunkUploadStatus(userId: string, uploadId: string) {
   const manifest = await readChunkManifest(uploadId);
+  if (manifest.userId !== userId) {
+    throw createApiError(403, "UPLOAD_ACCESS_DENIED", "Upload session does not belong to current user");
+  }
   return {
     uploadId,
     totalChunks: manifest.totalChunks,
@@ -533,8 +523,11 @@ export async function getChunkUploadStatus(uploadId: string) {
  * @param uploadId 上传会话 ID。
  * @returns 上传成功后的文件摘要。
  */
-export async function completeChunkUpload(uploadId: string) {
+export async function completeChunkUpload(userId: string, uploadId: string) {
   const manifest = await readChunkManifest(uploadId);
+  if (manifest.userId !== userId) {
+    throw createApiError(403, "UPLOAD_ACCESS_DENIED", "Upload session does not belong to current user");
+  }
   for (let index = 0; index < manifest.totalChunks; index += 1) {
     if (!manifest.receivedChunks.includes(index)) {
       throw createApiError(400, "CHUNK_UPLOAD_INCOMPLETE", "Chunk upload incomplete", [{ path: "uploadId", message: `Missing chunk index ${index}` }]);
@@ -653,10 +646,13 @@ export async function getFileDetail(payload: { userId: string; fileId: string; p
  * @returns 任务详情。
  * @throws TASK_NOT_FOUND 当任务不存在时抛出。
  */
-export async function getTask(taskId: string) {
+export async function getTask(userId: string, taskId: string) {
   const task = await taskRepository.findTaskById(taskId);
   if (!task) {
     throw createApiError(404, "TASK_NOT_FOUND", "Task not found");
+  }
+  if (task.userId !== userId) {
+    throw createApiError(403, "TASK_ACCESS_DENIED", "Task does not belong to current user");
   }
   return task;
 }
@@ -691,21 +687,7 @@ export async function dispatchPendingFileIngestion(payload: { userId: string; fi
     task: queuedTask,
   });
 
-  const fileExt = path.extname(file.fileName || "") || ".bin";
-  const absoluteFilePath = path.resolve(process.cwd(), file.storagePath);
-
-  void aiService.dispatchIngestionTask({
-    taskId: queuedTask.id,
-    fileId: file.id,
-    userId: file.userId,
-    fileName: file.fileName,
-    fileExt,
-    fileSizeBytes: file.fileSizeBytes,
-    contentMd5: file.contentMd5 || "",
-    storagePath: file.storagePath,
-    absoluteFilePath,
-    parseVersion: file.parseVersion,
-  });
+  ingestionScheduler.requestDispatch(queuedTask.id);
 
   return {
     accepted: true,
@@ -728,7 +710,7 @@ export async function offloadIndexedFile(payload: { userId: string; fileId: stri
     throw createApiError(409, "FILE_STATUS_INVALID", "Only indexed files can be offloaded");
   }
 
-  await aiService.deleteFileVectors(file.id);
+  await aiService.deleteFileVectors(file.id, payload.userId);
 
   const latestTask = await taskRepository.findLatestTaskByFileId(file.id);
   const updatedTask = latestTask
@@ -768,7 +750,7 @@ export async function deleteKnowledgeFile(payload: { userId: string; fileId: str
   }
 
   if (file.parseStatus === "indexed" || file.chunkCount > 0) {
-    await aiService.deleteFileVectors(file.id);
+    await aiService.deleteFileVectors(file.id, payload.userId);
   }
 
   const absoluteFilePath = path.resolve(process.cwd(), file.storagePath);

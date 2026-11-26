@@ -25,13 +25,9 @@ export async function createFileAndTask(payload: {
 }) {
   // Keep user-file-task creation atomic to avoid dangling tasks/files.
   return prisma.$transaction(async (tx) => {
-    const user = await tx.appUser.upsert({
+    // The user is guaranteed by requireAuth; never create accounts from upload payloads.
+    const user = await tx.appUser.findUniqueOrThrow({
       where: { id: payload.userId },
-      update: {},
-      create: {
-        id: payload.userId,
-        browserFingerprintHash: payload.userId,
-      },
     });
 
     const file = await tx.knowledgeFile.create({

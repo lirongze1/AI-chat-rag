@@ -1,0 +1,76 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-ai_chat_rag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-ai_chat_rag}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ai_chat_rag} -d ${POSTGRES_DB:-ai_chat_rag}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  backend:
+    build: ./backend-server
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-ai_chat_rag}:${POSTGRES_PASSWORD:-change-me}@postgres:5432/${POSTGRES_DB:-ai_chat_rag}?schema=public
+      PORT: 3001
+      CLIENT_ORIGIN: ${CLIENT_ORIGIN:-http://localhost:8080}
+      AI_SERVICE_BASE_URL: http://ai-server:8000
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
+      AI_SERVICE_SHARED_SECRET: ${AI_SERVICE_SHARED_SECRET:?AI_SERVICE_SHARED_SECRET must be set in .env}
+    volumes:
+      - backend-uploads:/app/upload
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: sh -c "npx prisma migrate deploy && npm run start"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  ai-server:
+    build: ./AI-server
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      PORT: 8000
+      NODE_BASE_URL: http://backend:3001/v1
+      CHROMA_PERSIST_DIRECTORY: /app/ai_chroma
+      AI_SERVICE_SHARED_SECRET: ${AI_SERVICE_SHARED_SECRET:?AI_SERVICE_SHARED_SECRET must be set in .env}
+    volumes:
+      - chroma-data:/app/ai_chroma
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/health',timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  client:
+    build:
+      context: ./client
+      args:
+        VITE_API_BASE_URL: /v1
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+      - ai-server
+
+volumes:
+  pgdata:
+  backend-uploads:
+  chroma-data:

@@ -1,4 +1,5 @@
-import { createApiUrl, requestApi } from "./httpClient";
+import { requestApi } from "./httpClient";
+import { parseSseJson, streamSse } from "./sse";
 
 export type FileParseStatus = "pending" | "processing" | "failed" | "indexed";
 
@@ -110,71 +111,56 @@ export type ChunkSession = {
   uploadedChunks: number[];
 };
 
-/**
- * 上传前检查当前用户是否已存在相同 MD5 的文件。
- * @param userId 用户 ID（浏览器指纹）。
- * @param contentMd5 文件 MD5。
- * @returns 预检结果。
- */
-export async function precheckUploadFile(userId: string, contentMd5: string): Promise<UploadPrecheckResult> {
+/** 检查当前登录用户是否已存在相同 MD5 的文件。 */
+export async function precheckUploadFile(contentMd5: string): Promise<UploadPrecheckResult> {
   return requestApi<UploadPrecheckResult>("/files/precheck", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ userId, contentMd5 }),
+    body: JSON.stringify({ contentMd5 }),
   });
 }
 
-/**
- * 获取当前用户知识库文件列表。
- * @param userId 用户 ID（浏览器指纹）。
- * @param options 查询参数。
- * @returns 文件列表。
- */
+/** 获取当前登录用户的知识库文件列表。 */
 export async function getKnowledgeFiles(
-  userId: string,
   options?: { parseStatus?: FileParseStatus; page?: number; limit?: number },
 ): Promise<KnowledgeFilesPage> {
-  const params = new URLSearchParams({ userId });
+  const params = new URLSearchParams();
 
   if (options?.parseStatus) {
     params.set("parseStatus", options.parseStatus);
   }
-
   if (typeof options?.page === "number") {
     params.set("page", String(options.page));
   }
-
   if (typeof options?.limit === "number") {
     params.set("limit", String(options.limit));
   }
 
-  return requestApi<KnowledgeFilesPage>(`/files?${params.toString()}`);
+  const query = params.toString();
+  return requestApi<KnowledgeFilesPage>(`/files${query ? `?${query}` : ""}`);
 }
 
+/** 获取单个文件详情，用户身份由 token 决定。 */
 export async function getKnowledgeFileDetail(
   fileId: string,
-  userId: string,
   options?: { page?: number; limit?: number },
 ): Promise<KnowledgeFileDetail> {
-  const params = new URLSearchParams({ userId });
+  const params = new URLSearchParams();
   if (typeof options?.page === "number") {
     params.set("page", String(options.page));
   }
   if (typeof options?.limit === "number") {
     params.set("limit", String(options.limit));
   }
-  return requestApi<KnowledgeFileDetail>(`/files/${encodeURIComponent(fileId)}/detail?${params.toString()}`);
+  const query = params.toString();
+  return requestApi<KnowledgeFileDetail>(
+    `/files/${encodeURIComponent(fileId)}/detail${query ? `?${query}` : ""}`,
+  );
 }
 
-/**
- * 直传小文件接口。
- * @param file 原始文件。
- * @param userId 用户 ID（浏览器指纹）。
- * @returns 上传结果。
- */
-export async function uploadFileDirect(file: File, userId: string): Promise<UploadResult> {
+/** 直传小文件接口。 */
+export async function uploadFileDirect(file: File): Promise<UploadResult> {
   const formData = new FormData();
-  formData.append("userId", userId);
   formData.append("file", file);
 
   return requestApi<UploadResult>("/files/upload", {
@@ -183,14 +169,9 @@ export async function uploadFileDirect(file: File, userId: string): Promise<Uplo
   });
 }
 
-/**
- * 初始化分片上传会话。
- * @param payload 初始化参数。
- * @returns 分片会话信息。
- */
+/** 初始化分片上传会话。 */
 export async function initChunkUpload(payload: {
   uploadId: string;
-  userId: string;
   fileName: string;
   fileSizeBytes: number;
   totalChunks: number;
@@ -202,22 +183,12 @@ export async function initChunkUpload(payload: {
   });
 }
 
-/**
- * 查询分片上传会话状态。
- * @param uploadId 上传会话 ID（文件哈希）。
- * @returns 分片会话信息。
- */
+/** 查询分片上传会话状态。 */
 export async function getChunkUploadStatus(uploadId: string): Promise<ChunkSession> {
   return requestApi<ChunkSession>(`/files/upload/chunked/status?uploadId=${encodeURIComponent(uploadId)}`);
 }
 
-/**
- * 上传单个分片。
- * @param uploadId 上传会话 ID（文件哈希）。
- * @param chunkIndex 分片序号。
- * @param blob 分片数据。
- * @returns 分片会话信息。
- */
+/** 上传单个分片。 */
 export async function uploadChunk(uploadId: string, chunkIndex: number, blob: Blob): Promise<ChunkSession> {
   const formData = new FormData();
   formData.append("uploadId", uploadId);
@@ -230,11 +201,7 @@ export async function uploadChunk(uploadId: string, chunkIndex: number, blob: Bl
   });
 }
 
-/**
- * 合并分片并完成上传。
- * @param uploadId 上传会话 ID（文件哈希）。
- * @returns 上传结果。
- */
+/** 合并分片并完成上传。 */
 export async function completeChunkUpload(uploadId: string): Promise<UploadResult> {
   return requestApi<UploadResult>("/files/upload/chunked/complete", {
     method: "POST",
@@ -243,31 +210,52 @@ export async function completeChunkUpload(uploadId: string): Promise<UploadResul
   });
 }
 
-export async function dispatchPendingKnowledgeFile(fileId: string, userId: string): Promise<ManualIngestionDispatchResult> {
+export async function dispatchPendingKnowledgeFile(fileId: string): Promise<ManualIngestionDispatchResult> {
   return requestApi<ManualIngestionDispatchResult>(`/files/${encodeURIComponent(fileId)}/ingest`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ userId }),
+    body: JSON.stringify({}),
   });
 }
 
-export async function offloadIndexedKnowledgeFile(fileId: string, userId: string): Promise<FileMutationResult> {
+export async function offloadIndexedKnowledgeFile(fileId: string): Promise<FileMutationResult> {
   return requestApi<FileMutationResult>(`/files/${encodeURIComponent(fileId)}/offload`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ userId }),
+    body: JSON.stringify({}),
   });
 }
 
-export async function deleteKnowledgeFile(fileId: string, userId: string): Promise<FileMutationResult> {
+export async function deleteKnowledgeFile(fileId: string): Promise<FileMutationResult> {
   return requestApi<FileMutationResult>(`/files/${encodeURIComponent(fileId)}`, {
     method: "DELETE",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ userId }),
+    body: JSON.stringify({}),
   });
 }
 
-export function createKnowledgeBaseEventSource(userId: string) {
-  const params = new URLSearchParams({ userId });
-  return new EventSource(createApiUrl(`/files/events?${params.toString()}`));
+/**
+ * 订阅当前用户的入库事件。EventSource 无法携带 Authorization，
+ * 因此改用带 token 的 fetch + ReadableStream，并支持中止。
+ */
+export async function streamIngestionEvents(
+  onEvent: (event: IngestionStreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  await streamSse("/files/events", {
+    signal,
+    onMessage: (message) => {
+      const payload = parseSseJson<IngestionStreamEvent>(message);
+      if (!payload || typeof payload.type !== "string") {
+        return;
+      }
+
+      const eventName = message.event && message.event !== "message"
+        ? message.event
+        : payload.type;
+      if (eventName === "ingestion.updated" || payload.type.startsWith("ingestion.")) {
+        onEvent(payload);
+      }
+    },
+  });
 }

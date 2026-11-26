@@ -7,10 +7,9 @@ import {
   streamChatCompletion,
   type ChatCompletionEvent,
 } from "../api";
-import { getOrCreateUserId } from "./uploadWorkservice";
 
 export async function loadChatSessions() {
-  return getChatSessions(getOrCreateUserId());
+  return getChatSessions();
 }
 
 export async function loadSessionMessages(sessionId: string) {
@@ -18,21 +17,22 @@ export async function loadSessionMessages(sessionId: string) {
 }
 
 export async function createChatSessionFromUserMessage(content: string) {
-  return createChatSession(getOrCreateUserId(), content.slice(0, 200));
+  return createChatSession(content.slice(0, 200));
 }
 
 export async function sendChatMessage(
   sessionId: string,
   content: string,
   onEvent: (event: ChatCompletionEvent) => void,
+  signal?: AbortSignal,
 ) {
-  return streamChatCompletion(sessionId, getOrCreateUserId(), content, onEvent);
+  return streamChatCompletion(sessionId, content, onEvent, signal);
 }
 
 export async function removeChatSession(sessionId: string) {
-  return deleteChatSession(sessionId, getOrCreateUserId());
+  return deleteChatSession(sessionId);
 }
 
 export async function removeChatSessions(sessionIds: string[]) {
-  return deleteChatSessions(sessionIds, getOrCreateUserId());
+  return deleteChatSessions(sessionIds);
 }

@@ -1,9 +1,10 @@
 import { createApiError } from "../common/errors";
+import { config } from "../config";
 
 interface AiChatPayload {
   query: string;
   sessionId?: string;
-  userId?: string;
+  userId: string;
   recentMessages?: Array<{
     role: "user" | "assistant";
     content: string;
@@ -15,46 +16,36 @@ interface AiChatResult {
   sources?: unknown[];
 }
 
-const AI_SERVICE_BASE_URL = process.env.AI_SERVICE_BASE_URL || "http://127.0.0.1:8000";
-const AI_SERVICE_TIMEOUT_MS = Number(process.env.AI_SERVICE_TIMEOUT_MS || 12000);
-const ingestionEndpoint = process.env.AI_INGESTION_ENDPOINT || `${AI_SERVICE_BASE_URL}/ingestion/jobs`;
-const vectorDeleteEndpoint = process.env.AI_VECTOR_DELETE_ENDPOINT || `${AI_SERVICE_BASE_URL}/vectors/files`;
-const aiServiceSharedSecret = process.env.AI_SERVICE_SHARED_SECRET || "";
-
 function createAiServiceHeaders(extraHeaders?: Record<string, string>) {
-  const headers: Record<string, string> = {
+  return {
+    "x-ai-service-secret": config.aiServiceSharedSecret,
     ...(extraHeaders || {}),
   };
+}
 
-  if (aiServiceSharedSecret) {
-    headers["x-ai-service-secret"] = aiServiceSharedSecret;
+function toAiServiceError(error: unknown): never {
+  if (error instanceof Error && error.name === "AbortError") {
+    throw createApiError(504, "AI_SERVICE_TIMEOUT", "AI service timeout");
   }
-
-  return headers;
+  if ((error as { code?: string })?.code) {
+    throw error;
+  }
+  throw createApiError(502, "AI_SERVICE_UNAVAILABLE", "AI service unavailable");
 }
 
 /**
- * 将聊天请求转发到 Python AI 服务，并统一上游异常语义。
- * @param payload AI 对话请求参数。
- * @returns AI 服务返回的回答与可选来源信息。
- * @throws AI_SERVICE_TIMEOUT 当请求超时。
- * @throws AI_SERVICE_ERROR 当 AI 服务返回非 2xx。
- * @throws AI_SERVICE_UNAVAILABLE 当网络不可用或服务不可达。
+ * Forward a chat request to the Python AI service with the authenticated user ID.
  */
 export async function requestChat(payload: AiChatPayload): Promise<AiChatResult> {
-  // AbortController prevents hung upstream calls from blocking Node workers.
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), AI_SERVICE_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), config.aiServiceTimeoutMs);
 
   try {
-    const response = await fetch(`${AI_SERVICE_BASE_URL}/chat`, {
+    const response = await fetch(`${config.aiServiceBaseUrl}/chat`, {
       method: "POST",
-      headers: createAiServiceHeaders({
-        "Content-Type": "application/json",
-      }),
+      headers: createAiServiceHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
         ...payload,
-        browserFingerprintHash: payload.userId,
       }),
       signal: controller.signal,
     });
@@ -63,34 +54,21 @@ export async function requestChat(payload: AiChatPayload): Promise<AiChatResult>
       throw createApiError(502, "AI_SERVICE_ERROR", `AI service returned ${response.status}`);
     }
 
-    const data = (await response.json()) as AiChatResult;
-    return data;
+    return (await response.json()) as AiChatResult;
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw createApiError(504, "AI_SERVICE_TIMEOUT", "AI service timeout");
-    }
-
-    if ((error as { code?: string })?.code) {
-      throw error;
-    }
-
-    throw createApiError(502, "AI_SERVICE_UNAVAILABLE", "AI service unavailable");
+    return toAiServiceError(error);
   } finally {
     clearTimeout(timer);
   }
 }
 
-/**
- * 向 Python AI 服务发起流式聊天请求。
- * @param payload AI 对话请求参数。
- * @returns 上游 Response 对象。
- */
+/** Open a streaming chat request to the Python AI service. */
 export async function streamChat(payload: AiChatPayload): Promise<Response> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), AI_SERVICE_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), config.aiServiceTimeoutMs);
 
   try {
-    const response = await fetch(`${AI_SERVICE_BASE_URL}/chat/stream`, {
+    const response = await fetch(`${config.aiServiceBaseUrl}/chat/stream`, {
       method: "POST",
       headers: createAiServiceHeaders({
         "Content-Type": "application/json",
@@ -98,7 +76,6 @@ export async function streamChat(payload: AiChatPayload): Promise<Response> {
       }),
       body: JSON.stringify({
         ...payload,
-        browserFingerprintHash: payload.userId,
       }),
       signal: controller.signal,
     });
@@ -107,27 +84,18 @@ export async function streamChat(payload: AiChatPayload): Promise<Response> {
       throw createApiError(502, "AI_SERVICE_ERROR", `AI service returned ${response.status}`);
     }
 
-    clearTimeout(timer);
     return response;
   } catch (error) {
+    return toAiServiceError(error);
+  } finally {
+    // Streaming continues after headers arrive; the upstream reader owns the rest.
     clearTimeout(timer);
-
-    if (error instanceof Error && error.name === "AbortError") {
-      throw createApiError(504, "AI_SERVICE_TIMEOUT", "AI service timeout");
-    }
-
-    if ((error as { code?: string })?.code) {
-      throw error;
-    }
-
-    throw createApiError(502, "AI_SERVICE_UNAVAILABLE", "AI service unavailable");
   }
 }
 
 /**
- * 异步派发向量化任务到 AI 服务。
- * @param payload 向量化任务参数。
- * @returns 无返回值。
+ * Dispatch an ingestion job to the Python AI service.
+ * Failures are thrown so the scheduler can persist them and retry with backoff.
  */
 export async function dispatchIngestionTask(payload: {
   taskId: string;
@@ -140,58 +108,48 @@ export async function dispatchIngestionTask(payload: {
   storagePath: string;
   absoluteFilePath: string;
   parseVersion: number;
-}) {
-  if (!ingestionEndpoint) {
-    return;
-  }
+}): Promise<void> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), config.aiServiceTimeoutMs);
 
   try {
-    const headers: Record<string, string> = {
-      ...createAiServiceHeaders(),
-      "Content-Type": "application/json",
-    };
-
-    await fetch(ingestionEndpoint, {
+    const response = await fetch(config.aiIngestionEndpoint, {
       method: "POST",
-      headers,
+      headers: createAiServiceHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(payload),
+      signal: controller.signal,
     });
-  } catch {
-    // Ignore dispatch failure here; worker can retry from pending tasks.
+
+    if (!response.ok) {
+      throw createApiError(502, "AI_SERVICE_ERROR", `AI ingestion service returned ${response.status}`);
+    }
+  } catch (error) {
+    return toAiServiceError(error);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
-/**
- * 删除某个文件在 AI 向量服务中的全部向量分块。
- * @param fileId 文件 ID。
- * @returns 无返回值。
- */
-export async function deleteFileVectors(fileId: string) {
+/** Delete all vector chunks of a file in the AI service. */
+export async function deleteFileVectors(fileId: string, userId: string): Promise<void> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), AI_SERVICE_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), config.aiServiceTimeoutMs);
 
   try {
-    const headers = createAiServiceHeaders();
-
-    const response = await fetch(`${vectorDeleteEndpoint}/${encodeURIComponent(fileId)}`, {
-      method: "DELETE",
-      headers,
-      signal: controller.signal,
-    });
+    const response = await fetch(
+      `${config.aiVectorDeleteEndpoint}/${encodeURIComponent(fileId)}?user_id=${encodeURIComponent(userId)}`,
+      {
+        method: "DELETE",
+        headers: createAiServiceHeaders(),
+        signal: controller.signal,
+      },
+    );
 
     if (!response.ok) {
       throw createApiError(502, "AI_SERVICE_ERROR", `AI service returned ${response.status}`);
     }
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw createApiError(504, "AI_SERVICE_TIMEOUT", "AI service timeout");
-    }
-
-    if ((error as { code?: string })?.code) {
-      throw error;
-    }
-
-    throw createApiError(502, "AI_SERVICE_UNAVAILABLE", "AI service unavailable");
+    return toAiServiceError(error);
   } finally {
     clearTimeout(timer);
   }

@@ -1,4 +1,3 @@
-
 /*
  * @Editor: zhanghang
  * @Description:
@@ -15,11 +14,14 @@ import {
   useState,
   type PropsWithChildren,
 } from "react";
-import { createKnowledgeBaseEventSource, type IngestionStreamEvent } from "../../api";
-import { getOrCreateUserId } from "../../workservice/uploadWorkservice";
+import { streamIngestionEvents, type IngestionStreamEvent } from "../../api";
+import { getAuthToken } from "../../api/httpClient";
+import { useAuth } from "../../context/AuthContext";
 import IngestionToastStack, { type IngestionToastItem } from "./IngestionToastStack";
 
 const TOAST_DURATION_MS = 5600;
+const INITIAL_RETRY_MS = 1000;
+const MAX_RETRY_MS = 30_000;
 
 type IngestionToastStage = "started" | "success" | "failed";
 
@@ -98,11 +100,33 @@ function buildIngestionToast(event: IngestionStreamEvent): IngestionToastItem | 
   return null;
 }
 
+/** 可被 AbortSignal 提前唤醒的退避等待。 */
+function waitWithAbort(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) {
+      resolve();
+      return;
+    }
+
+    const onAbort = () => {
+      window.clearTimeout(timeoutId);
+      resolve();
+    };
+    const timeoutId = window.setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export function IngestionEventProvider({ children }: PropsWithChildren) {
   const [toasts, setToasts] = useState<IngestionToastItem[]>([]);
   const [latestEvent, setLatestEvent] = useState<IngestionStreamEvent | null>(null);
   const notifiedStatusRef = useRef(new Map<string, string>());
   const toastTimeoutsRef = useRef(new Map<string, number>());
+  const { user } = useAuth();
 
   function dismissToast(toastId: string) {
     const timeoutId = toastTimeoutsRef.current.get(toastId);
@@ -133,40 +157,68 @@ export function IngestionEventProvider({ children }: PropsWithChildren) {
   }
 
   useEffect(() => {
-    const source = createKnowledgeBaseEventSource(getOrCreateUserId());
+    // 登录成功拿到用户后才建立带 token 的 SSE 连接；退出登录自动断开。
+    if (!user?.userId || !getAuthToken()) {
+      return;
+    }
 
-    source.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data) as IngestionStreamEvent;
-        setLatestEvent(payload);
+    let disposed = false;
+    let controller: AbortController | null = null;
+    let retryDelayMs = INITIAL_RETRY_MS;
 
-        const nextToastStage = getToastStage(payload);
-        if (!nextToastStage || !payload.file) {
-          return;
-        }
+    function acceptEvent(payload: IngestionStreamEvent) {
+      retryDelayMs = INITIAL_RETRY_MS;
+      setLatestEvent(payload);
 
-        const lastNotifiedStage = notifiedStatusRef.current.get(payload.file.id);
-        if (lastNotifiedStage === nextToastStage) {
-          return;
-        }
-
-        notifiedStatusRef.current.set(payload.file.id, nextToastStage);
-
-        const toast = buildIngestionToast(payload);
-        if (!toast) {
-          return;
-        }
-
-        showToast(toast);
-      } catch {
-        // Ignore malformed SSE payloads.
+      const nextToastStage = getToastStage(payload);
+      if (!nextToastStage || !payload.file) {
+        return;
       }
-    };
+
+      const lastNotifiedStage = notifiedStatusRef.current.get(payload.file.id);
+      if (lastNotifiedStage === nextToastStage) {
+        return;
+      }
+
+      notifiedStatusRef.current.set(payload.file.id, nextToastStage);
+
+      const toast = buildIngestionToast(payload);
+      if (toast) {
+        showToast(toast);
+      }
+    }
+
+    async function connect() {
+      while (!disposed) {
+        const activeController = new AbortController();
+        controller = activeController;
+
+        try {
+          await streamIngestionEvents((payload) => {
+            if (!disposed) {
+              acceptEvent(payload);
+            }
+          }, activeController.signal);
+        } catch {
+          // 断网、流结束或 401 都走下方退避重连；401 时 httpClient 已清理令牌并跳转。
+        }
+
+        if (disposed || !getAuthToken()) {
+          break;
+        }
+
+        await waitWithAbort(retryDelayMs, activeController.signal);
+        retryDelayMs = Math.min(retryDelayMs * 2, MAX_RETRY_MS);
+      }
+    }
+
+    void connect();
 
     return () => {
-      source.close();
+      disposed = true;
+      controller?.abort();
     };
-  }, []);
+  }, [user?.userId]);
 
   useEffect(() => {
     return () => {

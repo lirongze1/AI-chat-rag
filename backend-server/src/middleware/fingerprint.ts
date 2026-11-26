@@ -2,6 +2,7 @@ import type { NextFunction, Request, Response } from "express";
 import { sendApiError } from "../common/errors";
 
 /**
+ * @deprecated 指纹身份已被 JWT 鉴权取代；保留仅作历史参考，禁止在新路由中使用。
  * 校验请求中是否包含 userId（兼容旧字段 browserFingerprintHash），避免下游处理缺少用户标识。
  * @param req Express 请求对象。
  * @param res Express 响应对象。

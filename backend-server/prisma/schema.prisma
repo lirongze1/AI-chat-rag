@@ -3,7 +3,7 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 
@@ -28,8 +28,12 @@ enum MessageRole {
 }
 
 model AppUser {
-  id                     String          @id
-  browserFingerprintHash String          @unique @map("browser_fingerprint_hash")
+  id                     String          @id @default(uuid())
+  // Legacy fingerprint identifier; kept optional for backwards-compatible data only.
+  browserFingerprintHash String?         @unique @map("browser_fingerprint_hash")
+  email                  String          @unique @map("email")
+  passwordHash           String          @map("password_hash")
+  displayName            String?         @map("display_name")
   createdAt              DateTime        @default(now()) @map("created_at")
   knowledgeFiles         KnowledgeFile[]
   ingestionTasks         IngestionTask[]
@@ -60,19 +64,22 @@ model KnowledgeFile {
 }
 
 model IngestionTask {
-  id           String       @id @default(uuid())
-  userId       String       @map("user_id")
-  fileId       String       @map("file_id")
-  status       TaskStatus   @default(queued)
-  progress     Float        @default(0)
-  errorMessage String?      @map("error_message")
-  createdAt    DateTime     @default(now()) @map("created_at")
-  updatedAt    DateTime     @default(now()) @updatedAt @map("updated_at")
-  user         AppUser      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id           String        @id @default(uuid())
+  userId       String        @map("user_id")
+  fileId       String        @map("file_id")
+  status       TaskStatus    @default(queued)
+  progress     Float         @default(0)
+  errorMessage String?       @map("error_message")
+  attemptCount Int           @default(0) @map("attempt_count")
+  nextRetryAt  DateTime?     @map("next_retry_at")
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @default(now()) @updatedAt @map("updated_at")
+  user         AppUser       @relation(fields: [userId], references: [id], onDelete: Cascade)
   file         KnowledgeFile @relation(fields: [fileId], references: [id], onDelete: Cascade)
 
   @@index([userId, status, createdAt], map: "idx_ingestion_tasks_user_status_created")
   @@index([fileId], map: "idx_ingestion_tasks_file")
+  @@index([status, nextRetryAt], map: "idx_ingestion_tasks_retry")
   @@map("ingestion_tasks")
 }
 

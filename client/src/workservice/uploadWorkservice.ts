@@ -150,33 +150,12 @@ async function computeFileMd5(file: File) {
   return spark.end();
 }
 
-/**
- * 获取或生成用户 ID（当前实现为浏览器指纹）。
- * 会自动兼容并迁移旧的 localStorage key。
- * @returns 用户 ID 字符串。
- */
-export function getOrCreateUserId() {
-  const key = "rag.userId";
-  const legacyKey = "rag.browserFingerprintHash";
-  const existed = localStorage.getItem(key) || localStorage.getItem(legacyKey);
-  if (existed) {
-    localStorage.setItem(key, existed);
-    localStorage.removeItem(legacyKey);
-    return existed;
-  }
-
-  const created = crypto.randomUUID();
-  localStorage.setItem(key, created);
-  return created;
-}
-
 export async function fetchKnowledgeBaseRows(
   filter: KnowledgeBaseFilter = "all",
   page = 1,
   limit = 10,
 ): Promise<KnowledgeBaseRowsPage> {
-  const userId = getOrCreateUserId();
-  const response = await getKnowledgeFiles(userId, {
+  const response = await getKnowledgeFiles({
     parseStatus: filter === "all" ? undefined : filter,
     page,
     limit,
@@ -192,54 +171,47 @@ export async function fetchKnowledgeFileDetailById(
   fileId: string,
   options?: { page?: number; limit?: number },
 ): Promise<KnowledgeFileDetail> {
-  const userId = getOrCreateUserId();
-  return getKnowledgeFileDetail(fileId, userId, options);
+  return getKnowledgeFileDetail(fileId, options);
 }
 
 export async function requestPendingFileIngestion(fileId: string) {
-  const userId = getOrCreateUserId();
-  return dispatchPendingKnowledgeFile(fileId, userId);
+  return dispatchPendingKnowledgeFile(fileId);
 }
 
 export async function requestIndexedFileOffload(fileId: string) {
-  const userId = getOrCreateUserId();
-  return offloadIndexedKnowledgeFile(fileId, userId);
+  return offloadIndexedKnowledgeFile(fileId);
 }
 
 export async function requestKnowledgeFileDeletion(fileId: string) {
-  const userId = getOrCreateUserId();
-  return deleteKnowledgeFile(fileId, userId);
+  return deleteKnowledgeFile(fileId);
 }
 
 /**
- * 生成断点续传缓存 key。
+ * 生成断点续传缓存 key（用户隔离由后端 token 负责，本地仅按文件元数据区分）。
  * @param file 文件对象。
- * @param userId 用户 ID。
  * @returns localStorage key。
  */
-function getResumeStorageKey(file: File, userId: string) {
-  return `rag.upload.session.${userId}.${file.name}.${file.size}.${file.lastModified}`;
+function getResumeStorageKey(file: File) {
+  return `rag.upload.session.${file.name}.${file.size}.${file.lastModified}`;
 }
 
 /**
  * 调用小文件直传接口。
  * @param file 文件对象。
- * @param userId 用户 ID。
  * @returns 上传结果。
  */
-async function uploadSmallFile(file: File, userId: string): Promise<UploadResult> {
-  return uploadFileDirect(file, userId);
+async function uploadSmallFile(file: File): Promise<UploadResult> {
+  return uploadFileDirect(file);
 }
 
 /**
  * 初始化或恢复分片上传会话。
  * @param file 文件对象。
- * @param userId 用户 ID。
  * @param uploadId 文件 MD5 uploadId。
  * @returns 分片会话信息与缓存 key。
  */
-async function initOrResumeChunkSession(file: File, userId: string, uploadId: string) {
-  const storageKey = getResumeStorageKey(file, userId);
+async function initOrResumeChunkSession(file: File, uploadId: string) {
+  const storageKey = getResumeStorageKey(file);
   const resumedUploadId = localStorage.getItem(storageKey) || uploadId;
   if (resumedUploadId) {
     try {
@@ -259,7 +231,6 @@ async function initOrResumeChunkSession(file: File, userId: string, uploadId: st
   const totalChunks = Math.ceil(file.size / CHUNK_SIZE_BYTES);
   const session = await initChunkUpload({
     uploadId,
-    userId,
     fileName: file.name,
     fileSizeBytes: file.size,
     totalChunks,
@@ -303,18 +274,16 @@ async function uploadChunkWithRetry(uploadId: string, chunkIndex: number, blob: 
 /**
  * 执行大文件分片上传。
  * @param file 文件对象。
- * @param userId 用户 ID。
  * @param uploadId 分片会话 ID（文件 MD5）。
  * @param callbacks 进度与阶段回调。
  * @returns 上传结果。
  */
 async function uploadChunkedFile(
   file: File,
-  userId: string,
   uploadId: string,
   callbacks?: UploadCallbacks,
 ): Promise<UploadResult> {
-  const session = await initOrResumeChunkSession(file, userId, uploadId);
+  const session = await initOrResumeChunkSession(file, uploadId);
   const uploadedSet = new Set(session.uploadedChunks);
   const totalChunks = session.totalChunks;
 
@@ -355,10 +324,9 @@ async function uploadChunkedFile(
  * @returns 上传流程结果；知识库列表应通过后端文件接口刷新。
  */
 export async function uploadFileToKnowledgeBase(file: File, callbacks?: UploadCallbacks): Promise<KnowledgeBaseUploadOutcome> {
-  const userId = getOrCreateUserId();
   callbacks?.onPhaseChange?.("hashing");
   const contentMd5 = await computeFileMd5(file);
-  const precheck = await precheckUploadFile(userId, contentMd5);
+  const precheck = await precheckUploadFile(contentMd5);
 
   if (precheck.exists) {
     callbacks?.onPhaseChange?.("done");
@@ -368,9 +336,9 @@ export async function uploadFileToKnowledgeBase(file: File, callbacks?: UploadCa
   callbacks?.onPhaseChange?.("uploading");
 
   if (file.size <= SMALL_FILE_THRESHOLD_BYTES) {
-    await uploadSmallFile(file, userId);
+    await uploadSmallFile(file);
   } else {
-    await uploadChunkedFile(file, userId, contentMd5, callbacks);
+    await uploadChunkedFile(file, contentMd5, callbacks);
   }
 
   callbacks?.onPhaseChange?.("done");

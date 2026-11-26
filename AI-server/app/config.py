@@ -71,6 +71,16 @@ class Settings:
         os.getenv("NODE_CALLBACK_TIMEOUT_SECONDS", "10")
     )
 
+    def __post_init__(self) -> None:
+        """启动时校验强制配置，缺失密钥时拒绝提供服务。"""
+
+        secret = (self.ai_service_secret or "").strip()
+        object.__setattr__(self, "ai_service_secret", secret)
+        if not secret:
+            raise ValueError(
+                "AI_SERVICE_SHARED_SECRET is required and must not be empty"
+            )
+
 
 # 在导入阶段完成一次配置解析，供各模块直接复用。
 settings = Settings()

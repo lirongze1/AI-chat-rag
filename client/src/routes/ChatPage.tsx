@@ -57,7 +57,7 @@ const ChatPage = () => {
   // Whether the page is in blank new-chat mode; when true, history auto-select is suppressed.
   const [isNewChatMode, setIsNewChatMode] = useState(false);
 
-  const { handleSubmit } = useChatSubmit({
+  const { handleSubmit, abortStream } = useChatSubmit({
     activeSessionId,
     draft,
     isLoading,
@@ -161,6 +161,9 @@ const ChatPage = () => {
    * persisted session. The actual session is created on the first message send.
    */
   function handleCreateSession() {
+    // 新建会话时中止进行中的流式请求，避免旧流继续写入消息。
+    abortStream();
+    setIsLoading(false);
     setIsNewChatMode(true);
     setActiveSessionId(null);
     setMessages([]);
@@ -172,6 +175,9 @@ const ChatPage = () => {
    * Exits blank new-chat mode when the user selects a session from history.
    */
   function handleSelectSession(sessionId: string) {
+    // 切换会话同样中止旧流，避免事件回填到另一条会话。
+    abortStream();
+    setIsLoading(false);
     setIsNewChatMode(false);
     setActiveSessionId(sessionId);
   }

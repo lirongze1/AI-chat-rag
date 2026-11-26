@@ -1,6 +1,5 @@
 import { createApiError } from "../common/errors";
 import * as chatRepository from "../repositories/chat.repository";
-import * as userRepository from "../repositories/user.repository";
 
 type ChatMessageSource = {
   fileId?: string;
@@ -31,13 +30,11 @@ function mapMessageRecord<T extends { sourcesJson?: string | null }>(message: T)
 }
 
 /**
- * 为用户创建会话。
- * 会先执行用户 upsert，保证首次访问幂等。
+ * 为已认证用户创建会话。
  * @param payload 创建会话参数。
  * @returns 新创建的会话记录。
  */
 export async function createChatSession(payload: { userId: string; title?: string }) {
-  await userRepository.upsertUserById(payload.userId);
   const session = await chatRepository.createSession(payload.userId, payload.title || null);
   return {
     ...session,
@@ -67,11 +64,13 @@ export async function getChatSessions(query: { userId: string; limit: number }) 
  * @returns 新创建的消息记录。
  * @throws SESSION_NOT_FOUND 当会话不存在时抛出。
  */
-export async function createChatMessage(payload: { sessionId: string; role: "user" | "assistant"; content: string }) {
-  const session = await chatRepository.findSessionById(payload.sessionId);
-  if (!session) {
-    throw createApiError(404, "SESSION_NOT_FOUND", "Session not found");
-  }
+export async function createChatMessage(payload: {
+  sessionId: string;
+  userId: string;
+  role: "user" | "assistant";
+  content: string;
+}) {
+  await requireOwnedSession({ sessionId: payload.sessionId, userId: payload.userId });
 
   const message = await chatRepository.createMessage(payload.sessionId, payload.role, payload.content);
   return mapMessageRecord(message);
@@ -83,11 +82,8 @@ export async function createChatMessage(payload: { sessionId: string; role: "use
  * @returns 消息列表。
  * @throws SESSION_NOT_FOUND 当会话不存在时抛出。
  */
-export async function getChatMessages(payload: { sessionId: string; limit: number }) {
-  const session = await chatRepository.findSessionById(payload.sessionId);
-  if (!session) {
-    throw createApiError(404, "SESSION_NOT_FOUND", "Session not found");
-  }
+export async function getChatMessages(payload: { sessionId: string; userId: string; limit: number }) {
+  await requireOwnedSession({ sessionId: payload.sessionId, userId: payload.userId });
 
   const messages = await chatRepository.listMessages(payload.sessionId, payload.limit);
   return messages.map(mapMessageRecord);

@@ -1,14 +1,35 @@
 import cors from "cors";
-import express from "express";
+import express, { type Request } from "express";
 import { errorHandler } from "./common/errors";
+import { config } from "./config";
 import routes from "./routes/index";
 
 export const app = express();
 
-// Cross-origin access is enabled for MVP frontend integration.
-app.use(cors());
-// Parse JSON request bodies for all API handlers.
-app.use(express.json({ limit: "5mb" }));
+// Cross-origin access is limited to explicitly configured client origins.
+app.use(
+  cors({
+    origin: config.clientOrigins.length === 1 ? config.clientOrigins[0] : config.clientOrigins,
+    methods: ["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "x-ai-service-secret",
+      "x-ai-timestamp",
+      "x-ai-signature",
+    ],
+  }),
+);
+
+// Keep the exact JSON bytes so callback signatures can be verified.
+app.use(
+  express.json({
+    limit: "5mb",
+    verify: (req, _res, buf) => {
+      (req as unknown as Request).rawBody = buf.toString("utf8");
+    },
+  }),
+);
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true });

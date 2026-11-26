@@ -1,96 +1,188 @@
-type SchedulerRepository = {
-  findTaskById: (taskId: string) => Promise<{
-    id: string;
-    fileId: string;
-    status: string;
-  } | null>;
-  updateTaskById: (
-    taskId: string,
-    data: {
-      status?: "queued" | "running" | "success" | "failed";
-      progress?: number;
-      errorMessage?: string | null;
-    },
-  ) => Promise<unknown>;
-  updateFileById: (
-    fileId: string,
-    data: { parseStatus?: "pending" | "processing" | "failed" | "indexed" },
-  ) => Promise<unknown>;
+import path from "node:path";
+import { config } from "../config";
+import { prisma } from "../lib/prisma";
+import * as aiService from "./ai.service";
+
+type IngestionTaskRecord = {
+  id: string;
+  fileId: string;
+  userId: string;
+  status: "queued" | "running" | "success" | "failed" | "cancelled";
+  progress: number;
+  attemptCount: number;
 };
 
+let started = false;
+
 /**
- * 创建用于 MVP 的异步任务状态流转调度器。
- * @param repo 任务与文件状态读写能力集合。
- * @returns 包含 schedule 方法的调度器对象。
+ * Build the AI dispatch payload from persisted file/task records.
+ * The absolute path is derived from storagePath so a restarted process can resume.
  */
-export function createIngestionScheduler(repo: SchedulerRepository) {
-  const runningDelayMs = Number(process.env.MOCK_INGEST_RUNNING_DELAY_MS || 800);
-  const doneDelayMs = Number(process.env.MOCK_INGEST_DONE_DELAY_MS || 2200);
-  const shouldFail = process.env.MOCK_INGEST_FAIL === "1";
-
-  /**
-    * 为指定任务注册异步状态流转。
-    * @param taskId 任务 ID。
-    * @returns 无返回值。
-   */
-  function schedule(taskId: string) {
-    // Phase 1: queued -> running
-    setTimeout(async () => {
-      try {
-        const runningTask = await repo.findTaskById(taskId);
-        if (!runningTask || runningTask.status !== "queued") {
-          return;
-        }
-
-        await repo.updateTaskById(taskId, {
-          status: "running",
-          progress: 35,
-          errorMessage: null,
-        });
-
-        await repo.updateFileById(runningTask.fileId, {
-          parseStatus: "processing",
-        });
-      } catch (error) {
-        console.error("Failed to mark ingestion task as running", error);
-      }
-    }, runningDelayMs);
-
-    // Phase 2: running -> success | failed
-    setTimeout(async () => {
-      try {
-        const task = await repo.findTaskById(taskId);
-        if (!task || task.status !== "running") {
-          return;
-        }
-
-        if (shouldFail) {
-          await repo.updateTaskById(taskId, {
-            status: "failed",
-            progress: 100,
-            errorMessage: "Mock ingestion failed by MOCK_INGEST_FAIL",
-          });
-
-          await repo.updateFileById(task.fileId, {
-            parseStatus: "failed",
-          });
-          return;
-        }
-
-        await repo.updateTaskById(taskId, {
-          status: "success",
-          progress: 100,
-          errorMessage: null,
-        });
-
-        await repo.updateFileById(task.fileId, {
-          parseStatus: "indexed",
-        });
-      } catch (error) {
-        console.error("Failed to finalize ingestion task", error);
-      }
-    }, doneDelayMs);
+async function buildDispatchPayload(task: IngestionTaskRecord) {
+  const file = await prisma.knowledgeFile.findUnique({ where: { id: task.fileId } });
+  if (!file) {
+    return null;
   }
 
-  return { schedule };
+  return {
+    taskId: task.id,
+    fileId: file.id,
+    userId: file.userId,
+    fileName: file.fileName,
+    fileExt: path.extname(file.fileName || "") || ".bin",
+    fileSizeBytes: file.fileSizeBytes,
+    contentMd5: file.contentMd5 || "",
+    storagePath: file.storagePath,
+    absoluteFilePath: path.resolve(process.cwd(), file.storagePath),
+    parseVersion: file.parseVersion,
+  };
+}
+
+/** Persist failure details and schedule the next attempt with exponential backoff. */
+async function recordDispatchFailure(task: IngestionTaskRecord, error: unknown) {
+  const attemptCount = task.attemptCount + 1;
+  const message = error instanceof Error ? error.message : "Unknown ingestion dispatch error";
+
+  if (attemptCount >= config.ingestionMaxAttempts) {
+    await prisma.ingestionTask.update({
+      where: { id: task.id },
+      data: {
+        status: "failed",
+        attemptCount,
+        errorMessage: `Dispatch failed after ${attemptCount} attempts: ${message}`,
+        nextRetryAt: null,
+      },
+    });
+    await prisma.knowledgeFile.update({
+      where: { id: task.fileId },
+      data: { parseStatus: "failed" },
+    });
+    console.error(`[ingestionScheduler] task ${task.id} exhausted retries`, error);
+    return;
+  }
+
+  const delayMs = Math.min(
+    config.ingestionRetryBaseMs * 2 ** (attemptCount - 1),
+    config.ingestionRetryMaxMs,
+  );
+
+  await prisma.ingestionTask.update({
+    where: { id: task.id },
+    data: {
+      status: "queued",
+      attemptCount,
+      errorMessage: message,
+      nextRetryAt: new Date(Date.now() + delayMs),
+    },
+  });
+
+  console.error(
+    `[ingestionScheduler] task ${task.id} dispatch failed (attempt ${attemptCount}); retry in ${delayMs}ms`,
+    error,
+  );
+}
+
+/**
+ * Dispatch one queued/stale task. Failures are recorded in DB and retried later.
+ */
+export async function dispatchTask(taskId: string): Promise<void> {
+  const task = await prisma.ingestionTask.findUnique({ where: { id: taskId } });
+  if (!task || (task.status !== "queued" && task.status !== "running")) {
+    return;
+  }
+  if (task.nextRetryAt && task.nextRetryAt.getTime() > Date.now()) {
+    return;
+  }
+
+  const payload = await buildDispatchPayload(task);
+  if (!payload) {
+    await prisma.ingestionTask.update({
+      where: { id: taskId },
+      data: {
+        status: "failed",
+        errorMessage: "Knowledge file not found for ingestion task",
+        nextRetryAt: null,
+      },
+    });
+    console.error(`[ingestionScheduler] task ${taskId} has no matching knowledge file`);
+    return;
+  }
+
+  try {
+    await aiService.dispatchIngestionTask(payload);
+    await prisma.ingestionTask.update({
+      where: { id: taskId },
+      data: {
+        status: "running",
+        progress: Math.max(task.progress, 10),
+        errorMessage: null,
+        attemptCount: task.attemptCount + 1,
+        nextRetryAt: null,
+      },
+    });
+  } catch (error) {
+    await recordDispatchFailure(task, error);
+  }
+}
+
+/** Non-blocking trigger used by request handlers after a task is queued. */
+export function requestDispatch(taskId: string): void {
+  void dispatchTask(taskId).catch((error) => {
+    console.error(`[ingestionScheduler] unexpected error for task ${taskId}`, error);
+  });
+}
+
+/**
+ * Re-dispatch every due queued task and every running task that stopped progressing.
+ */
+export async function recoverPendingTasks(): Promise<void> {
+  const now = new Date();
+  const staleBefore = new Date(Date.now() - config.ingestionRunningTimeoutMs);
+
+  const tasks = await prisma.ingestionTask.findMany({
+    where: {
+      OR: [
+        {
+          status: "queued",
+          OR: [{ nextRetryAt: null }, { nextRetryAt: { lte: now } }],
+        },
+        { status: "running", updatedAt: { lt: staleBefore } },
+      ],
+    },
+    orderBy: { createdAt: "asc" },
+    take: 100,
+  });
+
+  for (const task of tasks) {
+    if (task.status === "running") {
+      await prisma.ingestionTask.update({
+        where: { id: task.id },
+        data: {
+          status: "queued",
+          attemptCount: task.attemptCount + 1,
+          errorMessage: "Recovered stale running task",
+          nextRetryAt: null,
+        },
+      });
+    }
+
+    await dispatchTask(task.id);
+  }
+}
+
+/** Start recovery immediately and keep polling for retry-due tasks. */
+export async function startIngestionScheduler(): Promise<void> {
+  if (started) {
+    return;
+  }
+  started = true;
+
+  await recoverPendingTasks();
+
+  const timer = setInterval(() => {
+    void recoverPendingTasks().catch((error) => {
+      console.error("[ingestionScheduler] recovery poll failed", error);
+    });
+  }, config.ingestionPollIntervalMs);
+  timer.unref?.();
 }

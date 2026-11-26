@@ -1,11 +1,5 @@
-/*
- * @Editor: zhanghang
- * @Description: 
- * @Date: 2026-04-02 18:16:49
- * @LastEditors: zhanghang
- * @LastEditTime: 2026-04-03 15:20:58
- */
-import { createApiUrl, requestApi } from "./httpClient";
+import { requestApi } from "./httpClient";
+import { parseSseJson, streamSse } from "./sse";
 
 export type ChatMessageSource = {
   fileId?: string;
@@ -39,138 +33,111 @@ export type ChatCompletionEvent =
   | { type: "message.completed"; assistantMessage: ChatMessage }
   | { type: "message.failed"; code?: string; message?: string };
 
-function parseSseBlock(block: string) {
-  const lines = block.split(/\r?\n/);
-  let event = "message";
-  const dataLines: string[] = [];
-
-  for (const line of lines) {
-    if (line.startsWith("event:")) {
-      event = line.slice(6).trim();
-      continue;
-    }
-
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice(5).trim());
-    }
-  }
-
-  if (!dataLines.length) {
-    return null;
-  }
-
-  return {
-    event,
-    data: JSON.parse(dataLines.join("\n")) as Record<string, unknown>,
-  };
-}
-
-export async function createChatSession(userId: string, title?: string) {
+/** 用户身份完全由后端从 Bearer Token 解析，请求体/查询串不再携带 userId。 */
+export async function createChatSession(title?: string) {
   return requestApi<ChatSession>("/chat/sessions", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ userId, title }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
   });
 }
 
-export async function getChatSessions(userId: string, limit = 50) {
-  const query = new URLSearchParams({ userId, limit: String(limit) });
-  return requestApi<ChatSession[]>(`/chat/sessions?${query.toString()}`);
+export async function getChatSessions(limit = 50) {
+  return requestApi<ChatSession[]>(`/chat/sessions?limit=${encodeURIComponent(String(limit))}`);
 }
 
 export async function getChatMessages(sessionId: string, limit = 100) {
   const query = new URLSearchParams({ limit: String(limit) });
-  return requestApi<ChatMessage[]>(`/chat/sessions/${sessionId}/messages?${query.toString()}`);
+  return requestApi<ChatMessage[]>(`/chat/sessions/${encodeURIComponent(sessionId)}/messages?${query.toString()}`);
 }
 
-export async function deleteChatSession(sessionId: string, userId: string) {
-  return requestApi<{ id: string }>(`/chat/sessions/${sessionId}?userId=${encodeURIComponent(userId)}`, {
+export async function deleteChatSession(sessionId: string) {
+  return requestApi<{ id: string }>(`/chat/sessions/${encodeURIComponent(sessionId)}`, {
     method: "DELETE",
   });
 }
 
-export async function deleteChatSessions(sessionIds: string[], userId: string) {
+export async function deleteChatSessions(sessionIds: string[]) {
   return requestApi<{ deletedCount: number }>("/chat/sessions", {
     method: "DELETE",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ userId, sessionIds }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionIds }),
   });
 }
 
+/**
+ * 流式发送聊天消息。通过公共 SSE 工具解析，支持中止；
+ * 单块畸形 JSON 会被跳过，不会中断整条流。
+ */
 export async function streamChatCompletion(
   sessionId: string,
-  userId: string,
   content: string,
   onEvent: (event: ChatCompletionEvent) => void,
+  signal?: AbortSignal,
 ) {
-  const response = await fetch(createApiUrl(`/chat/sessions/${sessionId}/completions`), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "text/event-stream",
+  await streamSse(`/chat/sessions/${encodeURIComponent(sessionId)}/completions`, {
+    init: {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
     },
-    body: JSON.stringify({ userId, content }),
-  });
-
-  if (!response.ok || !response.body) {
-    throw new Error(`HTTP ${response.status}`);
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) {
-      break;
-    }
-
-    buffer += decoder.decode(value, { stream: true });
-    const blocks = buffer.split(/\n\n/);
-
-    buffer = blocks.pop() || "";
-
-    for (const block of blocks) {
-      const parsed = parseSseBlock(block);
-      if (!parsed) {
-        continue;
+    signal,
+    onMessage: (message) => {
+      const payload = parseSseJson<Record<string, unknown>>(message);
+      if (!payload || typeof payload !== "object") {
+        return;
       }
 
-      if (parsed.event === "message.started") {
-        onEvent({ type: "message.started", userMessage: parsed.data.userMessage as ChatMessage | undefined });
-        continue;
+      // 兼容 event 名直接给出消息类型，或 event: message + data.type 两种约定。
+      const eventName = message.event !== "message" && message.event
+        ? message.event
+        : typeof payload.type === "string"
+          ? payload.type
+          : "message";
+
+      if (eventName === "message.started") {
+        onEvent({
+          type: "message.started",
+          userMessage: payload.userMessage as ChatMessage | undefined,
+        });
+        return;
       }
 
-      if (parsed.event === "message.delta") {
-        onEvent({ type: "message.delta", delta: String(parsed.data.delta || "") });
-        continue;
+      if (eventName === "message.delta") {
+        onEvent({ type: "message.delta", delta: String(payload.delta ?? "") });
+        return;
       }
 
-      if (parsed.event === "message.sources") {
+      if (eventName === "message.sources") {
         onEvent({
           type: "message.sources",
-          sources: (parsed.data.sources as ChatMessageSource[] | undefined) || [],
+          sources: (payload.sources as ChatMessageSource[] | undefined) ?? [],
         });
-        continue;
+        return;
       }
 
-      if (parsed.event === "message.completed") {
-        onEvent({ type: "message.completed", assistantMessage: parsed.data.assistantMessage as ChatMessage });
-        continue;
+      if (eventName === "message.completed") {
+        const assistantMessage = payload.assistantMessage as ChatMessage | undefined;
+        if (assistantMessage) {
+          onEvent({ type: "message.completed", assistantMessage });
+        }
+        return;
       }
 
-      if (parsed.event === "message.failed") {
+      // message.failed / error / message.error 统一兜底为失败事件。
+      if (
+        eventName === "message.failed"
+        || eventName === "error"
+        || eventName === "message.error"
+      ) {
         onEvent({
           type: "message.failed",
-          code: typeof parsed.data.code === "string" ? parsed.data.code : undefined,
-          message: typeof parsed.data.message === "string" ? parsed.data.message : undefined,
+          code: typeof payload.code === "string" ? payload.code : undefined,
+          message: typeof payload.message === "string"
+            ? payload.message
+            : "Chat generation failed",
         });
       }
-    }
-  }
+    },
+  });
 }
