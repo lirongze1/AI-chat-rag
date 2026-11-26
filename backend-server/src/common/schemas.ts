@@ -8,15 +8,74 @@ const md5HexSchema = z.string().regex(/^[a-fA-F0-9]{32}$/);
 
 /* ------------------------------ Account auth ------------------------------ */
 
-export const registerBodySchema = z.object({
-  email: z.string().trim().email().max(254),
-  password: z.string().min(8).max(128),
-  displayName: z.string().trim().min(1).max(100).optional(),
+// Public registration is disabled; only phone/email + password login remains.
+export const loginBodySchema = z.object({
+  account: z.string().trim().min(1).max(254),
+  password: z.string().min(1).max(128),
 });
 
-export const loginBodySchema = z.object({
-  email: z.string().trim().email().max(254),
-  password: z.string().min(1).max(128),
+/* ------------------------------ Admin ---------------------------------- */
+
+const phoneSchema = z.string().trim().regex(/^1[3-9]\d{9}$/, "Invalid phone number");
+const passwordSchema = z.string().min(8).max(128);
+const userRoleSchema = z.enum(["ADMIN", "USER"]);
+
+export const adminUsersQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(200).default(20),
+});
+
+export const createAdminUserBodySchema = z.object({
+  phone: phoneSchema,
+  password: passwordSchema,
+  displayName: z.string().trim().min(1).max(100).optional(),
+  role: userRoleSchema.optional(),
+});
+
+export const updateAdminUserBodySchema = z.object({
+  displayName: z.string().trim().min(1).max(100).optional(),
+  role: userRoleSchema.optional(),
+  isActive: z.boolean().optional(),
+});
+
+export const resetPasswordBodySchema = z.object({
+  newPassword: passwordSchema,
+});
+
+export const adminUserIdParamsSchema = z.object({
+  userId: z.string().min(1),
+});
+
+// apiKey: "" keeps the stored value, null clears it, any other string replaces it.
+const apiKeyFieldSchema = z.string().nullable().optional();
+
+export const appConfigBodySchema = z.object({
+  llm: z.object({
+    apiKey: apiKeyFieldSchema,
+    baseUrl: z.string().trim().max(500).optional(),
+    model: z.string().trim().min(1).max(100).optional(),
+    temperature: z.number().min(0).max(2).optional(),
+  }),
+  embedding: z.object({
+    provider: z.string().trim().min(1).max(50).optional(),
+    apiKey: apiKeyFieldSchema,
+    model: z.string().trim().min(1).max(100).optional(),
+    baseUrl: z.string().trim().max(500).optional(),
+  }),
+  retrieval: z.object({
+    topK: z.number().int().min(1).max(100).optional(),
+    scoreThreshold: z.number().min(0).max(1).optional(),
+    contextMessageLimit: z.number().int().min(1).max(100).optional(),
+  }),
+  chunk: z.object({
+    chunkSize: z.number().int().min(1).max(20000).optional(),
+    chunkOverlap: z.number().int().min(0).max(10000).optional(),
+    embeddingBatchSize: z.number().int().min(1).max(1000).optional(),
+  }),
+});
+
+export const configTestBodySchema = z.object({
+  kind: z.enum(["llm", "embedding"]),
 });
 
 /* ------------------------------- File upload ------------------------------ */

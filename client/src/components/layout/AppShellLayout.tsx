@@ -10,7 +10,8 @@ import { KnowledgeSearchProvider } from "../../context/KnowledgeSearchContext";
 import LeftSidebar from "./LeftSidebar";
 import TopHeader from "./TopHeader";
 
-function resolveActiveSection(pathname: string): "chat" | "knowledge" {
+function resolveActiveSection(pathname: string): "chat" | "knowledge" | "admin" {
+  if (pathname.startsWith("/admin")) return "admin";
   return pathname.startsWith("/knowledge-base") ? "knowledge" : "chat";
 }
 

@@ -10,7 +10,6 @@ import {
 import {
   getCurrentUser,
   loginWithPassword,
-  registerAccount,
   type AuthUser,
 } from "../api/auth.api";
 import { clearAuthToken, getAuthToken, setAuthToken } from "../api/httpClient";
@@ -18,8 +17,7 @@ import { clearAuthToken, getAuthToken, setAuthToken } from "../api/httpClient";
 type AuthContextValue = {
   user: AuthUser | null;
   isLoading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  register: (email: string, password: string, displayName?: string) => Promise<void>;
+  login: (account: string, password: string) => Promise<void>;
   logout: () => void;
   refreshUser: () => Promise<void>;
 };
@@ -51,17 +49,17 @@ export function AuthProvider({ children }: PropsWithChildren) {
     void refreshUser();
   }, [refreshUser]);
 
-  const login = useCallback(async (email: string, password: string) => {
-    const result = await loginWithPassword({ email, password });
+  const login = useCallback(async (account: string, password: string) => {
+    const result = await loginWithPassword({ account, password });
     setAuthToken(result.token);
-    setUser({ userId: result.userId, email: result.email, displayName: result.displayName });
-    setIsLoading(false);
-  }, []);
-
-  const register = useCallback(async (email: string, password: string, displayName?: string) => {
-    const result = await registerAccount({ email, password, displayName });
-    setAuthToken(result.token);
-    setUser({ userId: result.userId, email: result.email, displayName: result.displayName });
+    setUser({
+      userId: result.userId,
+      phone: result.phone,
+      email: result.email,
+      displayName: result.displayName,
+      role: result.role,
+      isActive: result.isActive,
+    });
     setIsLoading(false);
   }, []);
 
@@ -75,10 +73,9 @@ export function AuthProvider({ children }: PropsWithChildren) {
     user,
     isLoading,
     login,
-    register,
     logout,
     refreshUser,
-  }), [user, isLoading, login, register, logout, refreshUser]);
+  }), [user, isLoading, login, logout, refreshUser]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

@@ -4,16 +4,12 @@ import { getAuthToken } from "../api/httpClient";
 import MaterialIcon from "../components/common/MaterialIcon";
 import { useAuth } from "../context/AuthContext";
 
-type AuthMode = "login" | "register";
-
 const LoginPage = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const { login, register } = useAuth();
-  const [mode, setMode] = useState<AuthMode>("login");
-  const [email, setEmail] = useState("");
+  const { login } = useAuth();
+  const [account, setAccount] = useState("");
   const [password, setPassword] = useState("");
-  const [displayName, setDisplayName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -30,22 +26,13 @@ const LoginPage = () => {
     setSubmitting(true);
 
     try {
-      if (mode === "login") {
-        await login(email.trim(), password);
-      } else {
-        await register(email.trim(), password, displayName.trim() || undefined);
-      }
+      await login(account.trim(), password);
       navigate(redirectTo, { replace: true });
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "操作失败，请稍后重试");
     } finally {
       setSubmitting(false);
     }
-  }
-
-  function switchMode(next: AuthMode) {
-    setMode(next);
-    setError(null);
   }
 
   const inputClass =
@@ -62,63 +49,30 @@ const LoginPage = () => {
           <p className="mt-1 text-sm text-slate-500">登录以继续你的知识库与对话</p>
         </div>
 
-        <div className="mb-6 grid grid-cols-2 gap-1 rounded-xl bg-slate-100 p-1">
-          <button
-            type="button"
-            onClick={() => switchMode("login")}
-            className={`rounded-lg py-2 text-sm font-semibold transition-all ${
-              mode === "login" ? "bg-white text-black shadow-sm" : "text-slate-500 hover:text-black"
-            }`}
-          >
-            登录
-          </button>
-          <button
-            type="button"
-            onClick={() => switchMode("register")}
-            className={`rounded-lg py-2 text-sm font-semibold transition-all ${
-              mode === "register" ? "bg-white text-black shadow-sm" : "text-slate-500 hover:text-black"
-            }`}
-          >
-            注册
-          </button>
-        </div>
-
         <form onSubmit={handleSubmit} className="space-y-4">
           <label className="block">
-            <span className="mb-1.5 block text-xs font-semibold text-slate-600">邮箱</span>
+            <span className="mb-1.5 block text-xs font-semibold text-slate-600">手机号</span>
             <input
-              type="email"
-              autoComplete="email"
+              type="tel"
+              inputMode="numeric"
+              autoComplete="tel"
               required
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              placeholder="you@example.com"
+              value={account}
+              onChange={(event) => setAccount(event.target.value)}
+              placeholder="请输入手机号"
               className={inputClass}
             />
           </label>
-
-          {mode === "register" ? (
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-semibold text-slate-600">显示名称（可选）</span>
-              <input
-                type="text"
-                value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
-                placeholder="你的名字"
-                className={inputClass}
-              />
-            </label>
-          ) : null}
 
           <label className="block">
             <span className="mb-1.5 block text-xs font-semibold text-slate-600">密码</span>
             <input
               type="password"
-              autoComplete={mode === "login" ? "current-password" : "new-password"}
+              autoComplete="current-password"
               required
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              placeholder="••••••••"
+              placeholder="请输入密码"
               className={inputClass}
             />
           </label>
@@ -132,7 +86,7 @@ const LoginPage = () => {
             disabled={submitting}
             className="w-full rounded-lg bg-black px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {submitting ? "请稍候..." : mode === "login" ? "登录" : "创建账号"}
+            {submitting ? "请稍候..." : "登录"}
           </button>
         </form>
       </div>

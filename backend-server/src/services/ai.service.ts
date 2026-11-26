@@ -1,5 +1,6 @@
 import { createApiError } from "../common/errors";
 import { config } from "../config";
+import * as runtimeConfigService from "./runtimeConfigService";
 
 interface AiChatPayload {
   query: string;
@@ -14,6 +15,34 @@ interface AiChatPayload {
 interface AiChatResult {
   answer: string;
   sources?: unknown[];
+}
+
+/**
+ * Runtime-managed model and retrieval settings forwarded to the Python service.
+ * Identity is never taken from here: the userId below always comes from requireAuth.
+ */
+async function buildChatConfigExtras() {
+  const runtime = await runtimeConfigService.getDecryptedConfig();
+  return {
+    modelConfig: {
+      apiKey: runtime.llm.apiKey,
+      baseUrl: runtime.llm.baseUrl,
+      model: runtime.llm.model,
+      temperature: runtime.llm.temperature,
+    },
+    retrievalConfig: {
+      topK: runtime.retrieval.topK,
+      scoreThreshold: runtime.retrieval.scoreThreshold,
+      contextMessageLimit: runtime.retrieval.contextMessageLimit,
+    },
+    // 检索端必须与入库端使用同一 embedding 模型，否则切换模型后检索会失效。
+    embeddingConfig: {
+      provider: runtime.embedding.provider,
+      apiKey: runtime.embedding.apiKey,
+      model: runtime.embedding.model,
+      baseUrl: runtime.embedding.baseUrl,
+    },
+  };
 }
 
 function createAiServiceHeaders(extraHeaders?: Record<string, string>) {
@@ -41,11 +70,17 @@ export async function requestChat(payload: AiChatPayload): Promise<AiChatResult>
   const timer = setTimeout(() => controller.abort(), config.aiServiceTimeoutMs);
 
   try {
+    const extras = await buildChatConfigExtras();
     const response = await fetch(`${config.aiServiceBaseUrl}/chat`, {
       method: "POST",
       headers: createAiServiceHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({
-        ...payload,
+        query: payload.query,
+        sessionId: payload.sessionId,
+        // Always the authenticated subject; client-supplied identity claims are rejected upstream.
+        userId: payload.userId,
+        recentMessages: payload.recentMessages,
+        ...extras,
       }),
       signal: controller.signal,
     });
@@ -68,6 +103,7 @@ export async function streamChat(payload: AiChatPayload): Promise<Response> {
   const timer = setTimeout(() => controller.abort(), config.aiServiceTimeoutMs);
 
   try {
+    const extras = await buildChatConfigExtras();
     const response = await fetch(`${config.aiServiceBaseUrl}/chat/stream`, {
       method: "POST",
       headers: createAiServiceHeaders({
@@ -75,7 +111,12 @@ export async function streamChat(payload: AiChatPayload): Promise<Response> {
         Accept: "text/event-stream",
       }),
       body: JSON.stringify({
-        ...payload,
+        query: payload.query,
+        sessionId: payload.sessionId,
+        // Always the authenticated subject; never forward browserFingerprintHash.
+        userId: payload.userId,
+        recentMessages: payload.recentMessages,
+        ...extras,
       }),
       signal: controller.signal,
     });
@@ -113,10 +154,24 @@ export async function dispatchIngestionTask(payload: {
   const timer = setTimeout(() => controller.abort(), config.aiServiceTimeoutMs);
 
   try {
+    const runtime = await runtimeConfigService.getDecryptedConfig();
     const response = await fetch(config.aiIngestionEndpoint, {
       method: "POST",
       headers: createAiServiceHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        ...payload,
+        embeddingConfig: {
+          provider: runtime.embedding.provider,
+          apiKey: runtime.embedding.apiKey,
+          model: runtime.embedding.model,
+          baseUrl: runtime.embedding.baseUrl,
+        },
+        chunkConfig: {
+          chunkSize: runtime.chunk.chunkSize,
+          chunkOverlap: runtime.chunk.chunkOverlap,
+          embeddingBatchSize: runtime.chunk.embeddingBatchSize,
+        },
+      }),
       signal: controller.signal,
     });
 

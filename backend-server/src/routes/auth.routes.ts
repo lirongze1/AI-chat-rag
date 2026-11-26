@@ -4,7 +4,7 @@ import { requireAuth } from "../middleware/auth";
 
 const authRouter = Router();
 
-authRouter.post("/register", authController.register);
+// Public registration is intentionally not exposed.
 authRouter.post("/login", authController.login);
 authRouter.get("/me", requireAuth, authController.me);
 

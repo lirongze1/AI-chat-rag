@@ -1,23 +1,35 @@
-import crypto from "node:crypto";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { createApiError } from "../common/errors";
 import { config } from "../config";
 import * as userRepository from "../repositories/user.repository";
 
-const BCRYPT_ROUNDS = 12;
-
 export type AuthUser = {
   userId: string;
-  email: string;
+  phone: string | null;
+  email: string | null;
   displayName: string;
+  role: "ADMIN" | "USER";
+  isActive: boolean;
 };
 
-function toAuthUser(user: { id: string; email: string; displayName: string | null }): AuthUser {
+function toAuthUser(user: {
+  id: string;
+  phone: string | null;
+  email: string | null;
+  displayName: string | null;
+  role: "ADMIN" | "USER";
+  isActive: boolean;
+}): AuthUser {
   return {
     userId: user.id,
+    phone: user.phone,
     email: user.email,
-    displayName: user.displayName || user.email.split("@")[0],
+    displayName:
+      user.displayName?.trim() ||
+      (user.phone ? user.phone : user.email?.split("@")[0] || "User"),
+    role: user.role,
+    isActive: user.isActive,
   };
 }
 
@@ -29,39 +41,21 @@ function signToken(user: AuthUser): string {
   return jwt.sign({ email: user.email }, config.jwtSecret, options);
 }
 
-export async function register(input: {
-  email: string;
-  password: string;
-  displayName?: string;
-}): Promise<AuthUser & { token: string }> {
-  const email = input.email.trim().toLowerCase();
-  const existing = await userRepository.findUserByEmail(email);
-  if (existing) {
-    throw createApiError(409, "EMAIL_ALREADY_EXISTS", "Email already registered");
-  }
-
-  const passwordHash = await bcrypt.hash(input.password, BCRYPT_ROUNDS);
-  const displayName = input.displayName?.trim() || email.split("@")[0];
-  const user = await userRepository.createUser({
-    id: crypto.randomUUID(),
-    email,
-    passwordHash,
-    displayName,
-  });
-
-  const authUser = toAuthUser(user);
-  return { ...authUser, token: signToken(authUser) };
-}
-
+/**
+ * Phone (or legacy email) + password login. Public registration is disabled.
+ */
 export async function login(input: {
-  email: string;
+  account: string;
   password: string;
 }): Promise<AuthUser & { token: string }> {
-  const email = input.email.trim().toLowerCase();
-  const user = await userRepository.findUserByEmail(email);
+  const account = input.account.trim();
+  const user = await userRepository.findUserByAccount(account);
 
   if (!user || !(await bcrypt.compare(input.password, user.passwordHash))) {
-    throw createApiError(401, "INVALID_CREDENTIALS", "Invalid email or password");
+    throw createApiError(401, "INVALID_CREDENTIALS", "Invalid account or password");
+  }
+  if (!user.isActive) {
+    throw createApiError(401, "ACCOUNT_DISABLED", "Account is disabled");
   }
 
   const authUser = toAuthUser(user);
@@ -72,6 +66,9 @@ export async function getAuthenticatedUser(userId: string): Promise<AuthUser> {
   const user = await userRepository.findUserById(userId);
   if (!user) {
     throw createApiError(401, "UNAUTHORIZED", "Authenticated user no longer exists");
+  }
+  if (!user.isActive) {
+    throw createApiError(401, "ACCOUNT_DISABLED", "Account is disabled");
   }
   return toAuthUser(user);
 }

@@ -1,7 +1,8 @@
 import type { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
-import { config } from "../config";
 import { sendApiError } from "../common/errors";
+import { config } from "../config";
+import * as userRepository from "../repositories/user.repository";
 
 const LEGACY_IDENTITY_CLAIMS = ["userId", "browserFingerprintHash"] as const;
 
@@ -32,38 +33,56 @@ function hasConflictingIdentity(source: unknown, authenticatedUserId: string): b
   return false;
 }
 
-/** Verify Bearer JWT, attach req.userId, and reject spoofed identity claims. */
-export function requireAuth(req: Request, res: Response, next: NextFunction) {
+/**
+ * Verify Bearer JWT, then re-read the account from the DB on every request so
+ * role changes and soft-deletion take effect immediately.
+ */
+export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   const authorization = req.header("authorization") || "";
   const match = /^Bearer\s+(.+)$/i.exec(authorization);
   if (!match) {
     return sendApiError(res, 401, "UNAUTHORIZED", "Missing or invalid Authorization header");
   }
 
+  let userId: string;
   try {
     const decoded = jwt.verify(match[1].trim(), config.jwtSecret);
-    const userId =
+    userId =
       decoded && typeof decoded === "object" && typeof decoded.sub === "string" ? decoded.sub : "";
-
-    if (!userId) {
-      return sendApiError(res, 401, "UNAUTHORIZED", "Invalid token subject");
-    }
-
-    if (
-      hasConflictingIdentity(req.body, userId) ||
-      hasConflictingIdentity(req.query, userId)
-    ) {
-      return sendApiError(
-        res,
-        403,
-        "USER_ID_MISMATCH",
-        "Request identity does not match the authenticated user",
-      );
-    }
-
-    req.userId = userId;
-    return next();
   } catch {
     return sendApiError(res, 401, "UNAUTHORIZED", "Invalid or expired token");
   }
+
+  if (!userId) {
+    return sendApiError(res, 401, "UNAUTHORIZED", "Invalid token subject");
+  }
+
+  if (hasConflictingIdentity(req.body, userId) || hasConflictingIdentity(req.query, userId)) {
+    return sendApiError(
+      res,
+      403,
+      "USER_ID_MISMATCH",
+      "Request identity does not match the authenticated user",
+    );
+  }
+
+  try {
+    const user = await userRepository.findUserById(userId);
+    if (!user || !user.isActive) {
+      return sendApiError(res, 401, "UNAUTHORIZED", "Account is disabled or no longer exists");
+    }
+    req.userId = userId;
+    req.userRole = user.role;
+    return next();
+  } catch (error) {
+    return next(error);
+  }
+}
+
+/** Must be used after requireAuth; rejects non-admin accounts with 403. */
+export function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  if (req.userRole !== "ADMIN") {
+    return sendApiError(res, 403, "FORBIDDEN", "Administrator role required");
+  }
+  return next();
 }

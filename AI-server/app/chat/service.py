@@ -53,7 +53,12 @@ def stream_chat_events(payload: ChatRequest) -> Iterable[str]:
 
     try:
         sources = build_chat_sources(payload)
-        client = create_chat_llm()
+        model_config = (
+            payload.modelConfig.model_dump(exclude_none=True)
+            if payload.modelConfig is not None
+            else None
+        )
+        client = create_chat_llm(model_config)
         response = client.stream(build_llm_messages(payload, sources))
 
         for chunk in response:

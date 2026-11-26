@@ -4,7 +4,7 @@ import { useAuth } from "../../context/AuthContext";
 import { useKnowledgeSearch } from "../../context/KnowledgeSearchContext";
 
 type TopHeaderProps = {
-  active: "chat" | "knowledge";
+  active: "chat" | "knowledge" | "admin";
 };
 
 const TopHeader = ({ active }: TopHeaderProps) => {
@@ -58,8 +58,11 @@ const TopHeader = ({ active }: TopHeaderProps) => {
         ) : null}
         <div className="hidden items-center gap-2 border-l border-slate-100 pl-4 sm:flex">
           <MaterialIcon name="account_circle" className="!text-xl text-slate-400" />
-          <span className="max-w-48 truncate text-sm font-medium text-slate-600" title={user?.email}>
-            {user?.email || "..."}
+          <span
+            className="max-w-48 truncate text-sm font-medium text-slate-600"
+            title={user?.displayName || user?.phone || undefined}
+          >
+            {user?.displayName || user?.phone || "..."}
           </span>
           <button
             type="button"

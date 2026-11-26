@@ -2,20 +2,21 @@
 
 from __future__ import annotations
 
-from app.chat.schemas import ChatRequest, ChatSource
-from app.config import settings
+from app.chat.schemas import ChatRequest, ChatSource, resolve_retrieval_config
 from app.knowledge_base.vector_store import KnowledgeVectorStore
 
 
 def build_chat_sources(payload: ChatRequest) -> list[ChatSource]:
     """根据用户问题从知识库检索来源，并进行去重整理。"""
 
-    store = KnowledgeVectorStore()
+    effective = resolve_retrieval_config(payload.retrievalConfig)
+    # 检索端复用后台下发的 embedding 配置，保证与入库端模型/密钥一致。
+    store = KnowledgeVectorStore(embedding_config=payload.embeddingConfig)
     matches = store.retrieve_chunks(
         payload.query,
         payload.userId,
-        settings.chat_retrieval_top_k,
-        settings.chat_retrieval_score_threshold,
+        effective.top_k,
+        effective.score_threshold,
     )
     sources: list[ChatSource] = []
 

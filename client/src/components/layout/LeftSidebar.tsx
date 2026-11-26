@@ -1,13 +1,15 @@
 import { useNavigate } from "react-router-dom";
 import MaterialIcon from "../common/MaterialIcon";
+import { useAuth } from "../../context/AuthContext";
 
 type LeftSidebarProps = {
-  active: "chat" | "knowledge";
+  active: "chat" | "knowledge" | "admin";
   onNewChat?: () => void;
 };
 
 const LeftSidebar = ({ active, onNewChat }: LeftSidebarProps) => {
   const navigate = useNavigate();
+  const { user } = useAuth();
 
   const linkClass = (isActive: boolean) =>
     isActive
@@ -40,6 +42,16 @@ const LeftSidebar = ({ active, onNewChat }: LeftSidebarProps) => {
           <MaterialIcon name="database" filled={active === "knowledge"} />
           Knowledge Base
         </button>
+        {user?.role === "ADMIN" ? (
+          <button
+            type="button"
+            onClick={() => navigate("/admin")}
+            className={linkClass(active === "admin")}
+          >
+            <MaterialIcon name="admin_panel_settings" filled={active === "admin"} />
+            管理后台
+          </button>
+        ) : null}
       </nav>
     </aside>
   );

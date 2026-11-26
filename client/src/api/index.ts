@@ -7,6 +7,7 @@
  */
 export * from "./httpClient";
 export * from "./auth.api";
+export * from "./admin.api";
 export * from "./sse";
 export * from "./chat.api";
 export * from "./upload.api";

@@ -27,19 +27,37 @@ enum MessageRole {
   assistant
 }
 
+enum UserRole {
+  ADMIN
+  USER
+}
+
 model AppUser {
   id                     String          @id @default(uuid())
   // Legacy fingerprint identifier; kept optional for backwards-compatible data only.
   browserFingerprintHash String?         @unique @map("browser_fingerprint_hash")
-  email                  String          @unique @map("email")
+  // Nullable for historical rows that were created with email-only accounts.
+  phone                  String?         @unique @map("phone")
+  email                  String?         @unique @map("email")
   passwordHash           String          @map("password_hash")
   displayName            String?         @map("display_name")
+  role                   UserRole        @default(USER)
+  isActive               Boolean         @default(true) @map("is_active")
   createdAt              DateTime        @default(now()) @map("created_at")
   knowledgeFiles         KnowledgeFile[]
   ingestionTasks         IngestionTask[]
   chatSessions           ChatSession[]
 
   @@map("app_users")
+}
+
+model AppConfig {
+  id        String   @id @default("default")
+  data      Json
+  updatedAt DateTime @updatedAt @map("updated_at")
+  updatedBy String?  @map("updated_by")
+
+  @@map("app_configs")
 }
 
 model KnowledgeFile {

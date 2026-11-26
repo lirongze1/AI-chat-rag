@@ -10,10 +10,20 @@ from pathlib import Path
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from app.config import settings
+from app.config import coerce_int, settings
 from app.knowledge_base.document_loader import load_knowledge_documents
+from app.knowledge_base.embedding_model import (
+    effective_collection_name,
+    embedding_fingerprint,
+    write_active_embedding_config,
+)
 from app.knowledge_base.ingestion_callback_client import KnowledgeIngestionCallbackClient
-from app.knowledge_base.schemas import IngestionCallbackPayload, IngestionChunkSyncPayload, IngestionJob
+from app.knowledge_base.schemas import (
+    ChunkConfig,
+    IngestionCallbackPayload,
+    IngestionChunkSyncPayload,
+    IngestionJob,
+)
 from app.knowledge_base.vector_store import KnowledgeVectorStore
 
 
@@ -33,11 +43,35 @@ def _build_preview(value: str, limit: int = 240) -> str:
     return normalized[:limit] if normalized else "(empty chunk)"
 
 
+def _resolve_chunk_settings(
+    chunk_config: ChunkConfig | None,
+) -> tuple[int, int, int]:
+    """合并后台切块配置与 settings 默认值，返回切块大小、重叠和批量大小。"""
+
+    chunk_size = coerce_int(
+        chunk_config.chunkSize if chunk_config else None,
+        settings.chunk_size,
+        minimum=1,
+    )
+    # 重叠必须小于切块大小，否则 RecursiveCharacterTextSplitter 会拒绝切块。
+    chunk_overlap = coerce_int(
+        chunk_config.chunkOverlap if chunk_config else None,
+        settings.chunk_overlap,
+        minimum=0,
+        maximum=chunk_size - 1,
+    )
+    batch_size = coerce_int(
+        chunk_config.embeddingBatchSize if chunk_config else None,
+        settings.embedding_batch_size,
+        minimum=1,
+    )
+    return chunk_size, chunk_overlap, batch_size
+
+
 async def process_knowledge_ingestion_job(job: IngestionJob) -> None:
     """执行单个知识库文件的完整入库流程。"""
 
     callback_client = KnowledgeIngestionCallbackClient()
-    knowledge_vector_store = KnowledgeVectorStore()
 
     try:
         # 先通知上游任务已经开始执行，便于前端尽快进入处理中状态。
@@ -64,10 +98,22 @@ async def process_knowledge_ingestion_job(job: IngestionJob) -> None:
             )
         )
 
+        embedding_config = (
+            job.embeddingConfig.model_dump(exclude_none=True)
+            if job.embeddingConfig is not None
+            else None
+        )
+        chunk_size, chunk_overlap, batch_size = _resolve_chunk_settings(job.chunkConfig)
+        embedding_model_name = embedding_fingerprint(embedding_config)
+        knowledge_vector_store = KnowledgeVectorStore(
+            embedding_config=embedding_config,
+            embedding_batch_size=batch_size,
+        )
+
         documents = load_knowledge_documents(str(file_path))
         splitter = RecursiveCharacterTextSplitter(
-            chunk_size=settings.chunk_size,
-            chunk_overlap=settings.chunk_overlap,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
         )
         split_documents = splitter.split_documents(documents)
 
@@ -113,6 +159,8 @@ async def process_knowledge_ingestion_job(job: IngestionJob) -> None:
                         "file_name": job.fileName,
                         "content_md5": job.contentMd5,
                         "ingest_version": job.parseVersion,
+                        # provider:model 指纹，检索时按此过滤，避免混用不可兼容的向量。
+                        "embedding_model": embedding_model_name,
                     },
                 )
             )
@@ -136,6 +184,8 @@ async def process_knowledge_ingestion_job(job: IngestionJob) -> None:
         )
 
         knowledge_vector_store.add_chunks(documents=chunk_documents, ids=ids)
+        # 写入成功后才更新生效配置；失败时检索仍沿用上一版 embedding 指纹。
+        write_active_embedding_config(embedding_config)
 
         # 全部新向量写入成功后，才删除同文件同用户下版本更旧的向量；
         # 任一前置步骤失败都会走 except 分支，旧向量保持不动。
@@ -151,7 +201,7 @@ async def process_knowledge_ingestion_job(job: IngestionJob) -> None:
                 taskId=job.taskId,
                 fileId=job.fileId,
                 userId=job.userId,
-                collectionName=settings.chroma_collection_name,
+                collectionName=effective_collection_name(embedding_config),
                 parseVersion=job.parseVersion,
                 chunks=chunk_payloads,
             )

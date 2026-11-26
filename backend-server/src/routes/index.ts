@@ -3,6 +3,7 @@ import * as chatController from "../controllers/chat.controller";
 import * as fileController from "../controllers/file.controller";
 import { requireAuth } from "../middleware/auth";
 import { upload } from "../middleware/upload";
+import adminRouter from "./admin.routes";
 import aiRouter from "./ai.routes";
 import authRouter from "./auth.routes";
 import ingestionRouter from "./ingestion.routes";
@@ -12,6 +13,9 @@ const router = Router();
 // Public routes: account access and signed AI service callbacks.
 router.use("/auth", authRouter);
 router.use("/ai/ingestion", ingestionRouter);
+
+// Admin routes enforce auth + admin role themselves (mounted before the global guard).
+router.use("/admin", adminRouter);
 
 // Every remaining /v1 route requires a valid Bearer token.
 router.use(requireAuth);

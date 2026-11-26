@@ -41,7 +41,8 @@ AI-server/
       └─ vector_store.py
 ├─ tests/
 │  ├─ test_callback_signature.py
-│  └─ test_config.py
+│  ├─ test_config.py
+│  └─ test_dynamic_config.py
 ```
 
 ## 主要接口
@@ -50,6 +51,19 @@ AI-server/
 - `POST /ingestion/jobs`: 接收 Node 服务提交的入库任务
 - `DELETE /vectors/files/{file_id}`: 删除指定用户的文件向量，必须携带 `user_id`（query 参数 `?user_id=...` 或 JSON body `{"userId": "..."}`），否则返回 400
 - `POST /chat/stream`: 执行一次基于知识库的流式聊天
+
+## 管理员在线配置（可选请求字段）
+
+Node backend 会把 Web 后台保存的运行时配置随请求下发，AI-server 仅在这些字段存在且非空时覆盖环境变量：
+
+- `POST /chat/stream` 请求体可附带：
+  - `modelConfig: { apiKey, baseUrl, model, temperature }`，覆盖聊天模型与温度
+  - `retrievalConfig: { topK, scoreThreshold, contextMessageLimit }`，覆盖检索条数、相关性阈值与历史消息条数
+- `POST /ingestion/jobs` 请求体可附带：
+  - `embeddingConfig: { provider, apiKey, model, baseUrl }`，`provider` 仅支持 `zhipu` / `openai`
+  - `chunkConfig: { chunkSize, chunkOverlap, embeddingBatchSize }`，覆盖切块与批量写入参数
+
+未知字段会被忽略；`null`、空字符串、非法数值都会回退到 settings 默认值，旧客户端无需改动。SSE 事件（`message.started` / `delta` / `sources` / `completed` / `failed`）格式保持不变。
 
 ## 环境变量
 
@@ -60,7 +74,10 @@ AI-server/
 - 必填，聊天功能需要：`OPENAI_API_KEY`
 - 建议显式填写，聊天功能通常需要：`OPENAI_CHAT_MODEL`
 - 可选，有默认值：`NODE_BASE_URL`、`CHROMA_PERSIST_DIRECTORY`、`CHROMA_COLLECTION_NAME`、`INGEST_CHUNK_SIZE`、`INGEST_CHUNK_OVERLAP`、`EMBEDDING_BATCH_SIZE`、`NODE_CALLBACK_TIMEOUT_SECONDS`、`CHAT_RETRIEVAL_TOP_K`、`CHAT_RETRIEVAL_SCORE_THRESHOLD`、`CHAT_CONTEXT_MESSAGE_LIMIT`、`HOST`、`PORT`、`APP_ENV`（默认 `prod`）
+- 可选，embedding 兜底默认值：`EMBEDDING_PROVIDER`（`zhipu` 或 `openai`，默认 `zhipu`）、`ZHIPUAI_EMBEDDING_MODEL`（默认 `embedding-3`）、`OPENAI_EMBEDDING_MODEL`（默认 `text-embedding-3-small`）
 - 可选，按部署情况填写：`OPENAI_BASE_URL`
+
+环境变量是兜底默认值：管理员在 Web 后台保存的 LLM / embedding / 检索 / 切块配置会随请求下发并优先使用；字段缺失或为空字符串时自动回退到上述环境变量。
 
 如果你只验证知识库入库，不跑聊天，可以先不填 `OPENAI_API_KEY`。
 
@@ -122,6 +139,9 @@ python main.py
 
 - 新分块以 `job.parseVersion` 作为 metadata 的 `ingest_version` 写入；只有全部写入成功后，才删除同一 `file_id` + `user_id` 下 `ingest_version` 更小的旧向量。任一环节失败时旧向量保持不动。
 - 向量删除与检索均按 `user_id` 隔离，删除接口必须显式提供 `user_id`。
+- 每个分块还会写入 `embedding_model` 元数据，值为 `f"{provider}:{model}"` 指纹。入库成功后会把生效配置写入 `CHROMA_PERSIST_DIRECTORY/.active_embedding.json`（只保存 provider/model/baseUrl，不保存 apiKey）；检索时按该指纹过滤，避免不同 embedding 的结果混用。
+- **切换 embedding 模型（provider 或 model）后必须重新索引知识库**：旧模型向量仍留在 collection 中但会被指纹过滤掉，不会与新模型结果混用。collection 名称在入库与检索侧由 `effective_collection_name()` 统一计算，当前固定沿用 `CHROMA_COLLECTION_NAME`，因此不需要手工改集合名。
+- 聊天请求不携带 embeddingConfig，检索端使用最近一次成功入库记录的 provider/model 对查询向量化；若后台切换到 `openai` provider，请在 AI-server 环境变量中同时提供 `OPENAI_API_KEY`（以及必要的 `OPENAI_BASE_URL`），因为 apiKey 不会落盘保存。
 
 ## 注意事项
 

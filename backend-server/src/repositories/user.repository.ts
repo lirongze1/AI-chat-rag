@@ -1,18 +1,30 @@
+import type { UserRole } from "@prisma/client";
 import { prisma } from "../lib/prisma";
 
-/** Create an email/password account. Callers must hash the password first. */
+/** Create an account. Callers must hash the password first. */
 export async function createUser(data: {
   id: string;
-  email: string;
+  phone?: string | null;
+  email?: string | null;
   passwordHash: string;
-  displayName: string;
+  displayName?: string | null;
+  role?: UserRole;
 }) {
   return prisma.appUser.create({ data });
 }
 
-/** Look up an account by normalized email. */
-export async function findUserByEmail(email: string) {
-  return prisma.appUser.findUnique({ where: { email } });
+/** Match a phone number exactly, or a legacy email case-insensitively. */
+export async function findUserByAccount(account: string) {
+  return prisma.appUser.findFirst({
+    where: {
+      OR: [{ phone: account }, { email: account.toLowerCase() }],
+    },
+  });
+}
+
+/** Look up an account by phone (unique index). */
+export async function findUserByPhone(phone: string) {
+  return prisma.appUser.findUnique({ where: { phone } });
 }
 
 /** Look up an account by the subject of a verified JWT. */

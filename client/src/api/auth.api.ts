@@ -1,9 +1,14 @@
 import { requestApi } from "./httpClient";
 
+export type UserRole = "ADMIN" | "USER";
+
 export type AuthUser = {
   userId: string;
-  email: string;
+  phone: string;
+  email?: string | null;
   displayName?: string | null;
+  role: UserRole;
+  isActive: boolean;
 };
 
 export type AuthResult = AuthUser & {
@@ -11,24 +16,11 @@ export type AuthResult = AuthUser & {
 };
 
 export type Credentials = {
-  email: string;
+  account: string;
   password: string;
 };
 
-/** 注册新用户（公开接口，不注入 Authorization）。 */
-export function registerAccount(payload: Credentials & { displayName?: string }) {
-  return requestApi<AuthResult>(
-    "/auth/register",
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    },
-    { auth: false },
-  );
-}
-
-/** 邮箱密码登录（公开接口，不注入 Authorization）。 */
+/** 手机号密码登录（公开接口，不注入 Authorization）。 */
 export function loginWithPassword(payload: Credentials) {
   return requestApi<AuthResult>(
     "/auth/login",

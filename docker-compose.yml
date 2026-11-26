@@ -25,6 +25,9 @@ services:
       AI_SERVICE_BASE_URL: http://ai-server:8000
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in .env}
       AI_SERVICE_SHARED_SECRET: ${AI_SERVICE_SHARED_SECRET:?AI_SERVICE_SHARED_SECRET must be set in .env}
+      BOOTSTRAP_ADMIN_PHONE: ${BOOTSTRAP_ADMIN_PHONE:?BOOTSTRAP_ADMIN_PHONE must be set in .env}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:?BOOTSTRAP_ADMIN_PASSWORD must be set in .env}
+      BOOTSTRAP_ADMIN_RESET_PASSWORD: ${BOOTSTRAP_ADMIN_RESET_PASSWORD:-false}
     volumes:
       - backend-uploads:/app/upload
     depends_on:

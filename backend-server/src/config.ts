@@ -52,4 +52,22 @@ export const config = {
   ingestionRetryBaseMs: numberEnv("INGESTION_RETRY_BASE_MS", 1000),
   ingestionRetryMaxMs: numberEnv("INGESTION_RETRY_MAX_MS", 60000),
   ingestionMaxAttempts: numberEnv("INGESTION_MAX_ATTEMPTS", 8),
+
+  // Required: first-start administrator bootstrap. Password is only hashed in memory.
+  bootstrapAdminPhone: requireEnv("BOOTSTRAP_ADMIN_PHONE"),
+  bootstrapAdminPassword: requireEnv("BOOTSTRAP_ADMIN_PASSWORD"),
+  bootstrapAdminResetPassword:
+    process.env.BOOTSTRAP_ADMIN_RESET_PASSWORD?.trim().toLowerCase() === "true",
+
+  // Optional: used as fallbacks when the database has no runtime config override.
+  openaiApiKey: process.env.OPENAI_API_KEY?.trim() || "",
+  openaiBaseUrl: process.env.OPENAI_BASE_URL?.trim() || "",
+  openaiChatModel: process.env.OPENAI_CHAT_MODEL?.trim() || "",
+  zhipuaiApiKey: process.env.ZHIPUAI_API_KEY?.trim() || "",
+  chatRetrievalTopK: numberEnv("CHAT_RETRIEVAL_TOP_K", 5),
+  chatRetrievalScoreThreshold: numberEnv("CHAT_RETRIEVAL_SCORE_THRESHOLD", 0.35),
+  chatContextMessageLimit: numberEnv("CHAT_CONTEXT_MESSAGE_LIMIT", 8),
+  ingestChunkSize: numberEnv("INGEST_CHUNK_SIZE", 800),
+  ingestChunkOverlap: numberEnv("INGEST_CHUNK_OVERLAP", 120),
+  embeddingBatchSize: numberEnv("EMBEDDING_BATCH_SIZE", 64),
 } as const;

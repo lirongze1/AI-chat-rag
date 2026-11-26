@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 
-from app.chat.schemas import ChatRequest, ChatSource
-from app.config import settings
+from app.chat.schemas import ChatRequest, ChatSource, resolve_retrieval_config
 
 
 def build_system_prompt(sources: list[ChatSource]) -> str:
@@ -32,8 +31,9 @@ def build_llm_messages(payload: ChatRequest, sources: list[ChatSource]) -> list[
     """将会话上下文和检索结果转换为 LangChain 消息列表。"""
 
     messages: list[BaseMessage] = [SystemMessage(content=build_system_prompt(sources))]
+    effective = resolve_retrieval_config(payload.retrievalConfig)
 
-    for message in payload.recentMessages[-settings.chat_context_message_limit:]:
+    for message in payload.recentMessages[-effective.context_message_limit:]:
         if message.role == "assistant":
             messages.append(AIMessage(content=message.content))
             continue

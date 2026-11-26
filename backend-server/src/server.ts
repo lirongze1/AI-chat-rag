@@ -1,8 +1,12 @@
 import { app } from "./app";
 import { config } from "./config";
+import { ensureBootstrapAdmin } from "./services/bootstrapAdmin";
 import { startIngestionScheduler } from "./services/ingestionScheduler";
 
 async function main() {
+  // Idempotent first-start bootstrap: create or promote the administrator.
+  await ensureBootstrapAdmin();
+
   // Recover queued / stale running ingestion jobs before serving requests.
   await startIngestionScheduler();
 
